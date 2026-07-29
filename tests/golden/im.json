@@ -1,0 +1,253 @@
+{
+  "im0_response": {
+    "block_length": 56,
+    "block_type": 32,
+    "desc": "I&M0 record, vendor 0x0141, order/serial padded with NULs",
+    "hardware_revision": 7,
+    "hex": "002000380100014136455337203135352d36415530312d30424e30205320432d4558414d504c453030303031000756040201000a123456780101001e",
+    "im_supported": 30,
+    "im_version": 257,
+    "order_id_hex": "36455337203135352d36415530312d30424e3020",
+    "order_id_str": "6ES7 155-6AU01-0BN0 ",
+    "profile_id": 4660,
+    "profile_specific_type": 22136,
+    "revision_counter": 10,
+    "serial_hex": "5320432d4558414d504c453030303031",
+    "serial_str": "S C-EXAMPLE00001",
+    "sw_bug_fix": 2,
+    "sw_enhancement": 4,
+    "sw_internal_change": 1,
+    "sw_revision_prefix": 86,
+    "vendor_id": 321,
+    "vendor_id_high": 1,
+    "vendor_id_low": 65
+  },
+  "im1_response": {
+    "desc": "I&M1 record, tag function/location padded with NULs",
+    "hex": "00210038010050756d7020436f6e74726f6c00000000000000000000000000000000000000004275696c64696e672041000000000000000000000000",
+    "tag_function_str": "Pump Control",
+    "tag_location_str": "Building A"
+  },
+  "im2_response": {
+    "date_str": "2024-01-15 10:30",
+    "desc": "I&M2 record, installation date (16 chars, no padding)",
+    "hex": "002200120100323032342d30312d31352031303a3330"
+  },
+  "im3_response": {
+    "desc": "I&M3 record, descriptor padded with NULs",
+    "descriptor_str": "Line 4 distributed IO, maintained by OT",
+    "hex": "0023003801004c696e65203420646973747269627574656420494f2c206d61696e7461696e6564206279204f54000000000000000000000000000000"
+  },
+  "inm0_filter_response": {
+    "desc": "I&M0FilterData: 1 API, 2 modules, 3 submodules",
+    "expected": {
+      "0": {
+        "0": {
+          "module_ident": 256,
+          "subslots": {
+            "1": 65537,
+            "32768": 65538
+          }
+        },
+        "1": {
+          "module_ident": 512,
+          "subslots": {
+            "1": 131073
+          }
+        }
+      }
+    },
+    "hex": "0030002c0100000100000000000200000000010000020001000100018000000100020001000002000001000100020001"
+  },
+  "pd_real_data_response": {
+    "desc": "PDRealData: MBH(interface 0x0240) + MBH(port 0x020F w/ 1 peer)",
+    "hex": "0400002c0100000000000000000080000240001c0100056465762d310a1b2c3d4e5f0000c0a80032ffffff00c0a800010400004a010000000000000000008001020f003a010000000000800102703101000006706f72742d32056465762d32000000aabbccddeeff00000010000000000000000000000101000000000001",
+    "interface": {
+      "chassis_id": "dev-1",
+      "gateway": "192.168.0.1",
+      "ip": "192.168.0.50",
+      "mac": "0a:1b:2c:3d:4e:5f",
+      "subnet": "255.255.255.0"
+    },
+    "ports": [
+      {
+        "domain_boundary": 0,
+        "link_state_link": 1,
+        "link_state_port": 1,
+        "mau_type": 16,
+        "media_type": 1,
+        "multicast_boundary": 0,
+        "peers": [
+          {
+            "chassis_id": "dev-2",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "port_id": "port-2"
+          }
+        ],
+        "port_id": "p1",
+        "slot": 0,
+        "subslot": 32769
+      }
+    ],
+    "raw_blocks": [
+      {
+        "api": 0,
+        "hex": "000000000000000080000240001c0100056465762d310a1b2c3d4e5f0000c0a80032ffffff00c0a80001",
+        "slot": 0,
+        "subslot": 32768
+      },
+      {
+        "api": 0,
+        "hex": "00000000000000008001020f003a010000000000800102703101000006706f72742d32056465762d32000000aabbccddeeff00000010000000000000000000000101000000000001",
+        "slot": 0,
+        "subslot": 32769
+      }
+    ],
+    "slots": [
+      {
+        "api": 0,
+        "blocks": [
+          "PDInterfaceDataReal"
+        ],
+        "slot": 0,
+        "subslot": 32768
+      },
+      {
+        "api": 0,
+        "blocks": [
+          "PDPortDataReal"
+        ],
+        "slot": 0,
+        "subslot": 32769
+      }
+    ]
+  },
+  "read_request_im0": {
+    "desc": "full READ RPC request, slot0 subslot1 idx0xAFF0 len4096, seq0, fixed uuids",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000000010000aff000001000000000000000000000000000000000000000000000000000",
+    "idx": 45040,
+    "slot": 0,
+    "subslot": 1
+  },
+  "read_request_im1": {
+    "desc": "full READ RPC request, slot0 subslot1 idx0xAFF1 len4096, seq0, fixed uuids",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000000010000aff100001000000000000000000000000000000000000000000000000000",
+    "idx": 45041,
+    "slot": 0,
+    "subslot": 1
+  },
+  "read_request_im2": {
+    "desc": "full READ RPC request, slot0 subslot1 idx0xAFF2 len4096, seq0, fixed uuids",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000000010000aff200001000000000000000000000000000000000000000000000000000",
+    "idx": 45042,
+    "slot": 0,
+    "subslot": 1
+  },
+  "read_request_im3": {
+    "desc": "full READ RPC request, slot0 subslot1 idx0xAFF3 len4096, seq0, fixed uuids",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000000010000aff300001000000000000000000000000000000000000000000000000000",
+    "idx": 45043,
+    "slot": 0,
+    "subslot": 1
+  },
+  "read_request_inm0_filter": {
+    "desc": "full READ RPC request, slot0 subslot0 idx0xF840 len4096, seq0, fixed uuids",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000000000000f84000001000000000000000000000000000000000000000000000000000",
+    "idx": 63552,
+    "slot": 0,
+    "subslot": 0
+  },
+  "read_request_pd_real_data": {
+    "desc": "full READ RPC request, slot0 subslot1 idx0xF841 len4096, seq0, fixed uuids",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000000010000f84100001000000000000000000000000000000000000000000000000000",
+    "idx": 63553,
+    "slot": 0,
+    "subslot": 1
+  },
+  "read_request_real_identification_data": {
+    "desc": "full READ RPC request, slot0 subslot1 idx0xF000 len4096, seq0, fixed uuids",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000000010000f00000001000000000000000000000000000000000000000000000000000",
+    "idx": 61440,
+    "slot": 0,
+    "subslot": 1
+  },
+  "real_identification_data_truncated": {
+    "desc": "v1.1 cut mid-subslot-entry; slots parsed so far are kept",
+    "hex": "00130040010100020000000000020000000001000002000100010001800000",
+    "slots": [
+      {
+        "api": 0,
+        "module_ident": 256,
+        "slot": 0,
+        "submodule_ident": 65537,
+        "subslot": 1
+      }
+    ],
+    "version": [
+      1,
+      1
+    ]
+  },
+  "real_identification_data_v10": {
+    "desc": "RealIdentificationData v1.0, 1 slot / 2 subslots",
+    "hex": "00130018010000010004000000420002000100420001000200420002",
+    "slots": [
+      {
+        "api": 0,
+        "module_ident": 66,
+        "slot": 4,
+        "submodule_ident": 4325377,
+        "subslot": 1
+      },
+      {
+        "api": 0,
+        "module_ident": 66,
+        "slot": 4,
+        "submodule_ident": 4325378,
+        "subslot": 2
+      }
+    ],
+    "version": [
+      1,
+      0
+    ]
+  },
+  "real_identification_data_v11": {
+    "desc": "RealIdentificationData v1.1, 2 APIs / 3 slots / 4 subslots",
+    "hex": "00130040010100020000000000020000000001000002000100010001800000010002000100000200000100010002000100003e0000010002000003000001000100030001",
+    "slots": [
+      {
+        "api": 0,
+        "module_ident": 256,
+        "slot": 0,
+        "submodule_ident": 65537,
+        "subslot": 1
+      },
+      {
+        "api": 0,
+        "module_ident": 256,
+        "slot": 0,
+        "submodule_ident": 65538,
+        "subslot": 32768
+      },
+      {
+        "api": 0,
+        "module_ident": 512,
+        "slot": 1,
+        "submodule_ident": 131073,
+        "subslot": 1
+      },
+      {
+        "api": 15872,
+        "module_ident": 768,
+        "slot": 2,
+        "submodule_ident": 196609,
+        "subslot": 1
+      }
+    ],
+    "version": [
+      1,
+      1
+    ]
+  }
+}

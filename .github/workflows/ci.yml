@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No toolchain action: `rustup show` installs exactly what
+      # rust-toolchain.toml pins, components included, so the file is the
+      # single source of truth and CI cannot drift from local.
+      - run: rustup show
+      # libpcap is needed once the raw-L2 (dcp/rt/cyclic) modules land.
+      - run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all

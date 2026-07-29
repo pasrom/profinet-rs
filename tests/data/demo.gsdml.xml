@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Synthetic GSDML fixture for the test suite. It describes a fictional device
+  ("Example Automation GmbH" / ExampleIO) and exists only to exercise the
+  parser: a DAP with system-defined submodules, two pluggable modules, and
+  submodules carrying Input and Output DataItems of assorted types and widths.
+-->
+<ISO15745Profile xmlns="http://www.profibus.com/GSDML/2003/11/DeviceProfile" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.profibus.com/GSDML/2003/11/DeviceProfile ..\xsd\GSDML-DeviceProfile-V2.42.xsd">
+    <ProfileHeader>
+        <ProfileIdentification>PROFINET Device Profile</ProfileIdentification>
+        <ProfileRevision>1.00</ProfileRevision>
+        <ProfileName>Device Profile for PROFINET Devices</ProfileName>
+        <ProfileSource>PROFIBUS Nutzerorganisation e. V. (PNO)</ProfileSource>
+        <ProfileClassID>Device</ProfileClassID>
+        <ISO15745Reference>
+            <ISO15745Part>4</ISO15745Part>
+            <ISO15745Edition>1</ISO15745Edition>
+            <ProfileTechnology>GSDML</ProfileTechnology>
+        </ISO15745Reference>
+    </ProfileHeader>
+    <ProfileBody>
+        <DeviceIdentity DeviceID="0x0007" VendorID="0x0ABC">
+            <InfoText TextId="IDT_INFO_DEVICE"/>
+            <VendorName Value="Example Automation GmbH"/>
+        </DeviceIdentity>
+        <DeviceFunction>
+            <Family MainFamily="I/O" ProductFamily="ExampleIO"/>
+        </DeviceFunction>
+        <ApplicationProcess>
+            <DeviceAccessPointList>
+                <DeviceAccessPointItem CheckDeviceID_Allowed="true" DNS_CompatibleName="ExampleIO" DeviceAccessSupported="false" ID="IDD_DAP" ModuleIdentNumber="0x00000001" MinDeviceInterval="8" PhysicalSlots="0..8" FixedInSlots="0" ObjectUUID_LocalIndex="1" PNIO_Version="V2.42" RequiredSchemaVersion="V2.42">
+                    <ModuleInfo>
+                        <Name TextId="IDT_NAME_DAP"/>
+                        <InfoText TextId="IDT_INFO_DAP"/>
+                    </ModuleInfo>
+                    <UseableModules>
+                        <ModuleItemRef ModuleItemTarget="IDM_DEMO_IO" FixedInSlots="1"/>
+                        <ModuleItemRef ModuleItemTarget="IDM_DEMO_IN" AllowedInSlots="2..8"/>
+                    </UseableModules>
+                    <VirtualSubmoduleList>
+                        <VirtualSubmoduleItem ID="IDS_DAP" SubmoduleIdentNumber="0x00000001" MayIssueProcessAlarm="false">
+                            <IOData/>
+                            <ModuleInfo>
+                                <Name TextId="IDT_NAME_DAP_SUB"/>
+                                <InfoText TextId="IDT_INFO_DAP_SUB"/>
+                            </ModuleInfo>
+                        </VirtualSubmoduleItem>
+                    </VirtualSubmoduleList>
+                    <SystemDefinedSubmoduleList>
+                        <InterfaceSubmoduleItem ID="IDS_INTERFACE" SubmoduleIdentNumber="0x00008000" SubslotNumber="32768" TextId="IDT_NAME_INTERFACE" SupportedRT_Classes="RT_CLASS_1" DCP_HelloSupported="false"/>
+                        <PortSubmoduleItem ID="IDS_PORT_1" SubmoduleIdentNumber="0x00008001" SubslotNumber="32769" TextId="IDT_NAME_PORT1" MaxPortRxDelay="350" MaxPortTxDelay="160"/>
+                        <PortSubmoduleItem ID="IDS_PORT_2" SubmoduleIdentNumber="0x00008002" SubslotNumber="32770" TextId="IDT_NAME_PORT2" MaxPortRxDelay="350" MaxPortTxDelay="160"/>
+                    </SystemDefinedSubmoduleList>
+                </DeviceAccessPointItem>
+            </DeviceAccessPointList>
+            <ModuleList>
+                <ModuleItem ID="IDM_DEMO_IO" ModuleIdentNumber="0x00000010">
+                    <ModuleInfo>
+                        <Name TextId="IDT_NAME_DEMO_IO"/>
+                        <InfoText TextId="IDT_INFO_DEMO_IO"/>
+                    </ModuleInfo>
+                    <VirtualSubmoduleList>
+                        <VirtualSubmoduleItem ID="IDS_DEMO_IO" SubmoduleIdentNumber="0x00000011" MayIssueProcessAlarm="false">
+                            <IOData>
+                                <Input Consistency="All items consistency">
+                                    <DataItem TextId="IDT_DI_COUNTER" DataType="Unsigned32"/>
+                                    <DataItem TextId="IDT_DI_LEVEL" DataType="Unsigned16"/>
+                                    <DataItem TextId="IDT_DI_OFFSET" DataType="Integer16"/>
+                                    <DataItem TextId="IDT_DI_STATE" DataType="Unsigned8"/>
+                                    <DataItem TextId="IDT_DI_TAG" DataType="OctetString" Length="3"/>
+                                    <!-- Pads the input image past the 40-byte IOCR minimum while
+                                         the output stays below it, so both sides of that rule are
+                                         covered. The exact size is arbitrary: what the tests need
+                                         is one image above the threshold and one below. -->
+                                    <DataItem TextId="IDT_DI_PAYLOAD" DataType="OctetString" Length="35"/>
+                                </Input>
+                                <Output Consistency="All items consistency">
+                                    <DataItem TextId="IDT_DO_CONTROL" DataType="Unsigned8"/>
+                                    <DataItem TextId="IDT_DO_SETPOINT" DataType="Unsigned8"/>
+                                </Output>
+                            </IOData>
+                            <ModuleInfo>
+                                <Name TextId="IDT_NAME_DEMO_IO_SUB"/>
+                                <InfoText TextId="IDT_INFO_DEMO_IO_SUB"/>
+                            </ModuleInfo>
+                        </VirtualSubmoduleItem>
+                    </VirtualSubmoduleList>
+                </ModuleItem>
+                <ModuleItem ID="IDM_DEMO_IN" ModuleIdentNumber="0x00000020">
+                    <ModuleInfo>
+                        <Name TextId="IDT_NAME_DEMO_IN"/>
+                        <InfoText TextId="IDT_INFO_DEMO_IN"/>
+                    </ModuleInfo>
+                    <VirtualSubmoduleList>
+                        <VirtualSubmoduleItem ID="IDS_DEMO_IN" SubmoduleIdentNumber="0x00000021" MayIssueProcessAlarm="false">
+                            <IOData>
+                                <Input Consistency="All items consistency">
+                                    <DataItem TextId="IDT_DI_SENSOR_A" DataType="Unsigned32"/>
+                                    <DataItem TextId="IDT_DI_SENSOR_B" DataType="Unsigned32"/>
+                                </Input>
+                            </IOData>
+                            <ModuleInfo>
+                                <Name TextId="IDT_NAME_DEMO_IN_SUB"/>
+                                <InfoText TextId="IDT_INFO_DEMO_IN_SUB"/>
+                            </ModuleInfo>
+                        </VirtualSubmoduleItem>
+                    </VirtualSubmoduleList>
+                </ModuleItem>
+            </ModuleList>
+            <ExternalTextList>
+                <PrimaryLanguage>
+                    <Text TextId="IDT_INFO_DEVICE" Value="Fictional PROFINET I/O device used as a test fixture"/>
+                    <Text TextId="IDT_NAME_DAP" Value="ExampleIO Interface"/>
+                    <Text TextId="IDT_INFO_DAP" Value="Device access point"/>
+                    <Text TextId="IDT_NAME_DAP_SUB" Value="DAP submodule"/>
+                    <Text TextId="IDT_INFO_DAP_SUB" Value="Device access point submodule"/>
+                    <Text TextId="IDT_NAME_INTERFACE" Value="Interface"/>
+                    <Text TextId="IDT_NAME_PORT1" Value="Port 1"/>
+                    <Text TextId="IDT_NAME_PORT2" Value="Port 2"/>
+                    <Text TextId="IDT_NAME_DEMO_IO" Value="Demo I/O module"/>
+                    <Text TextId="IDT_INFO_DEMO_IO" Value="Module with input and output data"/>
+                    <Text TextId="IDT_NAME_DEMO_IO_SUB" Value="Demo I/O submodule"/>
+                    <Text TextId="IDT_INFO_DEMO_IO_SUB" Value="Submodule with input and output data"/>
+                    <Text TextId="IDT_NAME_DEMO_IN" Value="Demo input module"/>
+                    <Text TextId="IDT_INFO_DEMO_IN" Value="Module with input data only"/>
+                    <Text TextId="IDT_NAME_DEMO_IN_SUB" Value="Demo input submodule"/>
+                    <Text TextId="IDT_INFO_DEMO_IN_SUB" Value="Submodule with input data only"/>
+                    <Text TextId="IDT_DI_COUNTER" Value="Counter"/>
+                    <Text TextId="IDT_DI_LEVEL" Value="Level"/>
+                    <Text TextId="IDT_DI_OFFSET" Value="Offset"/>
+                    <Text TextId="IDT_DI_STATE" Value="State"/>
+                    <Text TextId="IDT_DI_TAG" Value="Tag"/>
+                    <Text TextId="IDT_DI_PAYLOAD" Value="Payload"/>
+                    <Text TextId="IDT_DO_CONTROL" Value="Control"/>
+                    <Text TextId="IDT_DO_SETPOINT" Value="Setpoint"/>
+                    <Text TextId="IDT_DI_SENSOR_A" Value="Sensor A"/>
+                    <Text TextId="IDT_DI_SENSOR_B" Value="Sensor B"/>
+                </PrimaryLanguage>
+            </ExternalTextList>
+        </ApplicationProcess>
+    </ProfileBody>
+</ISO15745Profile>

@@ -1,0 +1,9 @@
+# Pinned, not "stable", so CI reproduces what was tested locally.
+#
+# The CI gate runs clippy with -D warnings. On a floating channel every Rust
+# release can turn a new lint into a build failure with no code change, which
+# is what happened on the first push here. Bumping this is a deliberate act:
+# raise the version, run the gate locally, fix what the new lints find.
+[toolchain]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]

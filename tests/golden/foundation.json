@@ -1,0 +1,78 @@
+{
+  "s2mac": {
+    "in": "01:02:03:04:05:06",
+    "hex": "010203040506"
+  },
+  "ip2s": {
+    "in": "192.168.0.2",
+    "hex": "c0a80002"
+  },
+  "block_iod_read_header": {
+    "desc": "block_type=0x0009 block_length=60 version 1.0",
+    "hex": "0009003c0100"
+  },
+  "iod_read_record": {
+    "desc": "ar=00..0f seq0 api0 slot1 subslot1 idx4660 length8",
+    "hex": "0009003c01000000000102030405060708090a0b0c0d0e0f00000000000100010000123400000008000000000000000000000000000000000000000000000000"
+  },
+  "iod_write_5000": {
+    "desc": "ar=00..0f seq0 api0 slot2 subslot1 idx5000 length1 payload=01",
+    "hex": "0008003c01000000000102030405060708090a0b0c0d0e0f0000000000020001000013880000000100000000000000000000000000000000000000000000000001"
+  },
+  "object_uuid_dev0007_vendor0abc": {
+    "desc": "remote object uuid = OBJECT_UUID_PREFIX + 00 01 <dev_hi dev_lo> <ven_hi ven_lo>",
+    "hex": "dea000006c9711d18271000100070abc"
+  },
+  "iface_uuid_device": {
+    "desc": "PNIO device interface uuid",
+    "hex": "dea000016c9711d1827100a02442df7d"
+  },
+  "nrd_read_record": {
+    "desc": "NRD wrapping the read IOD",
+    "hex": "000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000100010000123400000008000000000000000000000000000000000000000000000000"
+  },
+  "rpc_read_record": {
+    "desc": "full Read Record RPC request; obj=dev0007/vendor0abc, iface=device, act=10..1f, seq0, op=READ(2)",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000002ffffffff005400000000000005dc00000040000005dc00000000000000400009003c01000000000102030405060708090a0b0c0d0e0f00000000000100010000123400000008000000000000000000000000000000000000000000000000"
+  },
+  "rpc_write_5000": {
+    "desc": "full Write Record RPC request; idx5000 payload01, op=WRITE(3)",
+    "hex": "0400200000000000dea000006c9711d18271000100070abcdea000016c9711d1827100a02442df7d101112131415161718191a1b1c1d1e1f0000000000000001000000000003ffffffff005500000000000005dc00000041000005dc00000000000000410008003c01000000000102030405060708090a0b0c0d0e0f0000000000020001000013880000000100000000000000000000000000000000000000000000000001"
+  },
+  "dcp_identify_all_request": {
+    "desc": "Identify-All request; src 02:00:00:00:00:01 xid 0x01020304 delay 0x0080",
+    "hex": "010ecf0000000200000000018892fefe05000102030400800004ffff0000"
+  },
+  "dcp_set_name_request": {
+    "desc": "Set Name-of-Station 'device' (even length), qualifier 0x0000",
+    "hex": "0a1b2c3d4e5f0200000000018892fefd0400010203040000000c020200080000646576696365"
+  },
+  "dcp_set_name_request_odd": {
+    "desc": "Set Name-of-Station 'plc-1' (odd length: DCP length counts an unsent pad byte)",
+    "hex": "0a1b2c3d4e5f0200000000018892fefd0400010203040000000c020200070000706c632d31"
+  },
+  "dcp_set_ip_request": {
+    "desc": "Set IP 192.168.10.3/255.255.255.0 gw 192.168.10.1, qualifier temporary 0x0000",
+    "hex": "0a1b2c3d4e5f0200000000018892fefd040001020304000000120102000e0000c0a80a03ffffff00c0a80a01"
+  },
+  "dcp_identify_response": {
+    "desc": "Identify response from 00:1b:1b:aa:bb:cc: type S7-1200, name device-io, ip 192.168.10.3, vendor 0x002A device 0x0101, role IO-Device",
+    "hex": "020000000001001b1baabbcc8892feff0501010203040000004202010009000053372d31323030000202000b00006465766963652d696f000102000e0001c0a80a03ffffff00c0a80a01020300060000002a01010204000400000100"
+  },
+  "dcp_identify_response_vlan": {
+    "desc": "same Identify response but 802.1Q-tagged (tpid 0x8100, tci 0)",
+    "hex": "020000000001001b1baabbcc810000008892feff0501010203040000004202010009000053372d31323030000202000b00006465766963652d696f000102000e0001c0a80a03ffffff00c0a80a01020300060000002a01010204000400000100"
+  },
+  "rt_frame_c001": {
+    "desc": "RT input frame id 0xC001, payload 00..27, cycle 0x1234, status VALID|RUN|OK|PRIMARY, transfer 0",
+    "hex": "c001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262712343500"
+  },
+  "rt_frame_c000_small": {
+    "desc": "RT output frame id 0xC000, payload deadbeef, cycle 1, status VALID|RUN, transfer 0",
+    "hex": "c000deadbeef00011400"
+  },
+  "rt_ethernet_frame_c001": {
+    "desc": "full Ethernet frame (dst 0a:1b:2c:3d:4e:5f, src 02:00:00:00:00:01, ethertype 0x8892) wrapping rt_frame_c001",
+    "hex": "0a1b2c3d4e5f0200000000018892c001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262712343500"
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "device": {
+    "vendor_id": 2748,
+    "device_id": 7,
+    "daps": [
+      {
+        "id": "IDD_DAP",
+        "module_ident": 1,
+        "submodules": [
+          {
+            "id": "IDS_DAP",
+            "submodule_ident": 1,
+            "input_length": 0,
+            "output_length": 0
+          }
+        ],
+        "system_submodules": [
+          {
+            "subslot_number": 32768,
+            "submodule_ident": 32768
+          },
+          {
+            "subslot_number": 32769,
+            "submodule_ident": 32769
+          },
+          {
+            "subslot_number": 32770,
+            "submodule_ident": 32770
+          }
+        ],
+        "useable_modules": [
+          {
+            "target": "IDM_DEMO_IO",
+            "fixed": [
+              1
+            ],
+            "allowed": []
+          },
+          {
+            "target": "IDM_DEMO_IN",
+            "fixed": [],
+            "allowed": [
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8
+            ]
+          }
+        ]
+      }
+    ],
+    "modules": [
+      {
+        "id": "IDM_DEMO_IO",
+        "module_ident": 16,
+        "submodules": [
+          {
+            "id": "IDS_DEMO_IO",
+            "submodule_ident": 17,
+            "input_length": 47,
+            "output_length": 2
+          }
+        ],
+        "useable_submodules": []
+      },
+      {
+        "id": "IDM_DEMO_IN",
+        "module_ident": 32,
+        "submodules": [
+          {
+            "id": "IDS_DEMO_IN",
+            "submodule_ident": 33,
+            "input_length": 8,
+            "output_length": 0
+          }
+        ],
+        "useable_submodules": []
+      }
+    ],
+    "submodule_catalog": []
+  },
+  "io_slots": [
+    {
+      "slot": 0,
+      "subslot": 1,
+      "module_ident": 1,
+      "submodule_ident": 1,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 0,
+      "subslot": 32768,
+      "module_ident": 1,
+      "submodule_ident": 32768,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 0,
+      "subslot": 32769,
+      "module_ident": 1,
+      "submodule_ident": 32769,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 0,
+      "subslot": 32770,
+      "module_ident": 1,
+      "submodule_ident": 32770,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 1,
+      "subslot": 1,
+      "module_ident": 16,
+      "submodule_ident": 17,
+      "input_length": 47,
+      "output_length": 2
+    }
+  ],
+  "io_slots_from_device": [
+    {
+      "slot": 0,
+      "subslot": 1,
+      "module_ident": 1,
+      "submodule_ident": 1,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 0,
+      "subslot": 32768,
+      "module_ident": 1,
+      "submodule_ident": 32768,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 0,
+      "subslot": 32769,
+      "module_ident": 1,
+      "submodule_ident": 32769,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 0,
+      "subslot": 32770,
+      "module_ident": 1,
+      "submodule_ident": 32770,
+      "input_length": 0,
+      "output_length": 0
+    },
+    {
+      "slot": 1,
+      "subslot": 1,
+      "module_ident": 16,
+      "submodule_ident": 17,
+      "input_length": 47,
+      "output_length": 2
+    },
+    {
+      "slot": 9,
+      "subslot": 1,
+      "module_ident": 57005,
+      "submodule_ident": 48879,
+      "input_length": 0,
+      "output_length": 0
+    }
+  ]
+}

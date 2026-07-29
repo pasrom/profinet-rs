@@ -1,0 +1,1954 @@
+{
+ "alarm_ack": {
+  "desc": "PNAlarmAckPDU for the alarm_diag_channel alarm (low prio)",
+  "hex": "80020012010000010000000000010001092300000000"
+ },
+ "alarm_cr_res": {
+  "desc": "block list with AlarmCRBlockRes 0x8103, local ref 0x002A",
+  "hex": "810100060100000000018103000801000001002a00c8",
+  "local_alarm_reference": 42
+ },
+ "alarm_diag_channel": {
+  "desc": "low-prio Diagnosis alarm, one DiagnosisItem USI 0x8000",
+  "expected": {
+   "alarm_sequence_number": 291,
+   "alarm_type": 1,
+   "alarm_type_name": "Diagnosis",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": true,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [
+    {
+     "channel_error_type": 6,
+     "channel_number": 1,
+     "channel_properties": 2341,
+     "ext_channel_add_value": 0,
+     "ext_channel_error_type": 0,
+     "kind": "DiagnosisItem",
+     "props": {
+      "channel_number_value": 1,
+      "channel_type": 37,
+      "is_accumulative": false,
+      "is_extended": false,
+      "is_qualified": false
+     },
+     "qualified_channel_qualifier": 0,
+     "user_structure_id": 32768,
+     "usi_name": "ChannelDiagnosis"
+    }
+   ],
+   "location": "0:1:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 48,
+   "raw_payload": "8000000109250006",
+   "slot_number": 1,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 305,
+   "subslot_number": 1
+  },
+  "hex": "000200200100000100000000000100010000003000000131092300008000000109250006"
+ },
+ "alarm_ext_and_qualified": {
+  "desc": "high-prio alarm with Ext (0x8002) and Qualified (0x8003) items",
+  "expected": {
+   "alarm_sequence_number": 1,
+   "alarm_type": 2,
+   "alarm_type_name": "Process",
+   "api": 0,
+   "ar_diagnosis_state": true,
+   "block_type": 1,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": true,
+   "is_low_priority": false,
+   "items": [
+    {
+     "channel_error_type": 32769,
+     "channel_number": 33059,
+     "channel_properties": 8197,
+     "ext_channel_add_value": 7,
+     "ext_channel_error_type": 32773,
+     "kind": "DiagnosisItem",
+     "props": {
+      "channel_number_value": 291,
+      "channel_type": 5,
+      "is_accumulative": true,
+      "is_extended": true,
+      "is_qualified": false
+     },
+     "qualified_channel_qualifier": 0,
+     "user_structure_id": 32770,
+     "usi_name": "ExtChannelDiagnosis"
+    },
+    {
+     "channel_error_type": 32771,
+     "channel_number": 2,
+     "channel_properties": 2341,
+     "ext_channel_add_value": 9,
+     "ext_channel_error_type": 32769,
+     "kind": "DiagnosisItem",
+     "props": {
+      "channel_number_value": 2,
+      "channel_type": 37,
+      "is_accumulative": false,
+      "is_extended": true,
+      "is_qualified": true
+     },
+     "qualified_channel_qualifier": 305419896,
+     "user_structure_id": 32771,
+     "usi_name": "QualifiedChannelDiagnosis"
+    }
+   ],
+   "location": "0:2:0x8001",
+   "manufacturer_specific": false,
+   "module_ident_number": 66,
+   "raw_payload": "8002812320058001800500000007800300020925800380010000000912345678",
+   "slot_number": 2,
+   "submodule_diagnosis_state": true,
+   "submodule_ident_number": 67,
+   "subslot_number": 32769
+  },
+  "hex": "000100380100000200000000000280010000004200000043600100008002812320058001800500000007800300020925800380010000000912345678"
+ },
+ "alarm_maintenance": {
+  "desc": "Status alarm with MaintenanceItem USI 0x8100 (demanded)",
+  "expected": {
+   "alarm_sequence_number": 2,
+   "alarm_type": 5,
+   "alarm_type_name": "Status",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [
+    {
+     "block_length": 8,
+     "block_type": 3840,
+     "block_version": 256,
+     "kind": "MaintenanceItem",
+     "maintenance_status": 2,
+     "props": {
+      "maintenance_demanded": true,
+      "maintenance_required": false
+     },
+     "user_structure_id": 33024,
+     "usi_name": "MaintenanceItem"
+    }
+   ],
+   "location": "0:0:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 16,
+   "raw_payload": "81000f0000080100000000000002",
+   "slot_number": 0,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 17,
+   "subslot_number": 1
+  },
+  "hex": "0002002601000005000000000000000100000010000000110002000081000f0000080100000000000002"
+ },
+ "alarm_no_items": {
+  "desc": "ReturnOfSubmodule alarm without payload items",
+  "expected": {
+   "alarm_sequence_number": 66,
+   "alarm_type": 11,
+   "alarm_type_name": "ReturnOfSubmodule",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [],
+   "location": "0:1:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 48,
+   "raw_payload": "",
+   "slot_number": 1,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 305,
+   "subslot_number": 1
+  },
+  "hex": "000200180100000b0000000000010001000000300000013100420000"
+ },
+ "alarm_pe": {
+  "desc": "alarm with PE_AlarmItem USI 0x8310 (EnergySaving mode 0x10)",
+  "expected": {
+   "alarm_sequence_number": 9,
+   "alarm_type": 5,
+   "alarm_type_name": "Status",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [
+    {
+     "block_length": 3,
+     "block_type": 1538,
+     "block_version": 256,
+     "kind": "PE_AlarmItem",
+     "pe_operational_mode": 16,
+     "user_structure_id": 33552,
+     "usi_name": "PE_AlarmItem"
+    }
+   ],
+   "location": "0:0:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 1,
+   "raw_payload": "831006020003010010",
+   "slot_number": 0,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 1,
+   "subslot_number": 1
+  },
+  "hex": "00020021010000050000000000000001000000010000000100090000831006020003010010"
+ },
+ "alarm_pral": {
+  "desc": "Pull alarm with PRAL_AlarmItem USI 0x8320 + add value",
+  "expected": {
+   "alarm_sequence_number": 11,
+   "alarm_type": 3,
+   "alarm_type_name": "Pull",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [
+    {
+     "channel_number": 3,
+     "kind": "PRAL_AlarmItem",
+     "pral_channel_properties": 2341,
+     "pral_ext_reason": 1,
+     "pral_reason": 2,
+     "pral_reason_add_value": "aabb",
+     "user_structure_id": 33568,
+     "usi_name": "PRAL_AlarmItem"
+    }
+   ],
+   "location": "0:4:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 5,
+   "raw_payload": "83200003092500020001aabb",
+   "slot_number": 4,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 6,
+   "subslot_number": 1
+  },
+  "hex": "000200240100000300000000000400010000000500000006000b000083200003092500020001aabb"
+ },
+ "alarm_rs": {
+  "desc": "alarm with three RS_AlarmItems (0x8300..0x8302)",
+  "expected": {
+   "alarm_sequence_number": 7,
+   "alarm_type": 1,
+   "alarm_type_name": "Diagnosis",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 1,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": true,
+   "is_low_priority": false,
+   "items": [
+    {
+     "kind": "RS_AlarmItem",
+     "rs_alarm_info": 2047,
+     "user_structure_id": 33536,
+     "usi_name": "RS_AlarmItem_Low"
+    },
+    {
+     "kind": "RS_AlarmItem",
+     "rs_alarm_info": 2049,
+     "user_structure_id": 33537,
+     "usi_name": "RS_AlarmItem_High"
+    },
+    {
+     "kind": "RS_AlarmItem",
+     "rs_alarm_info": 65535,
+     "user_structure_id": 33538,
+     "usi_name": "RS_AlarmItem_Submodule"
+    }
+   ],
+   "location": "0:1:0x0002",
+   "manufacturer_specific": false,
+   "module_ident_number": 3,
+   "raw_payload": "830007ff830108018302ffff",
+   "slot_number": 1,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 4,
+   "subslot_number": 2
+  },
+  "hex": "00010024010000010000000000010002000000030000000400070000830007ff830108018302ffff"
+ },
+ "alarm_truncated_item": {
+  "desc": "alarm with a valid RS item then a truncated maintenance item",
+  "expected": {
+   "alarm_sequence_number": 1,
+   "alarm_type": 1,
+   "alarm_type_name": "Diagnosis",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [
+    {
+     "kind": "RS_AlarmItem",
+     "rs_alarm_info": 5,
+     "user_structure_id": 33536,
+     "usi_name": "RS_AlarmItem_Low"
+    }
+   ],
+   "location": "0:1:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 48,
+   "raw_payload": "83000005810000000000",
+   "slot_number": 1,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 305,
+   "subslot_number": 1
+  },
+  "hex": "0002002201000001000000000001000100000030000001310001000083000005810000000000"
+ },
+ "alarm_unknown_usi": {
+  "desc": "alarm with manufacturer-specific USI 0x1234 -> generic item",
+  "expected": {
+   "alarm_sequence_number": 13,
+   "alarm_type": 4,
+   "alarm_type_name": "Plug",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [
+    {
+     "kind": "AlarmItem",
+     "raw_data": "010203",
+     "user_structure_id": 4660,
+     "usi_name": "ManufacturerSpecific(0x1234)"
+    }
+   ],
+   "location": "0:3:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 7,
+   "raw_payload": "1234010203",
+   "slot_number": 3,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 8,
+   "subslot_number": 1
+  },
+  "hex": "0002001d0100000400000000000300010000000700000008000d00001234010203"
+ },
+ "alarm_upload_retrieval": {
+  "desc": "UploadAndRetrieval alarm with USI 0x8200 + 0x8201 items",
+  "expected": {
+   "alarm_sequence_number": 5,
+   "alarm_type": 30,
+   "alarm_type_name": "UploadAndRetrieval",
+   "api": 0,
+   "ar_diagnosis_state": false,
+   "block_type": 2,
+   "block_version": [
+    1,
+    0
+   ],
+   "channel_diagnosis": false,
+   "is_high_priority": false,
+   "is_low_priority": true,
+   "items": [
+    {
+     "block_length": 12,
+     "block_type": 2304,
+     "block_version": 256,
+     "kind": "UploadRetrievalItem",
+     "ur_record_index": 57424,
+     "ur_record_length": 256,
+     "user_structure_id": 33280,
+     "usi_name": "UploadRecord"
+    },
+    {
+     "block_length": 12,
+     "block_type": 2305,
+     "block_version": 256,
+     "kind": "UploadRetrievalItem",
+     "ur_record_index": 57425,
+     "ur_record_length": 512,
+     "user_structure_id": 33281,
+     "usi_name": "iParameterItem"
+    }
+   ],
+   "location": "0:0:0x0001",
+   "manufacturer_specific": false,
+   "module_ident_number": 1,
+   "raw_payload": "82000900000c010000000000e0500000010082010901000c010000000000e05100000200",
+   "slot_number": 0,
+   "submodule_diagnosis_state": false,
+   "submodule_ident_number": 2,
+   "subslot_number": 1
+  },
+  "hex": "0002003c0100001e000000000000000100000001000000020005000082000900000c010000000000e0500000010082010901000c010000000000e05100000200"
+ },
+ "decode_channel_error_type": {
+  "cases": [
+   [
+    0,
+    "Reserved"
+   ],
+   [
+    1,
+    "Short circuit"
+   ],
+   [
+    2,
+    "Undervoltage"
+   ],
+   [
+    3,
+    "Overvoltage"
+   ],
+   [
+    4,
+    "Overload"
+   ],
+   [
+    5,
+    "Overtemperature"
+   ],
+   [
+    6,
+    "Line break"
+   ],
+   [
+    7,
+    "Upper limit value exceeded"
+   ],
+   [
+    8,
+    "Lower limit value exceeded"
+   ],
+   [
+    9,
+    "Error"
+   ],
+   [
+    10,
+    "Simulation active"
+   ],
+   [
+    11,
+    "Reserved (0x000B)"
+   ],
+   [
+    12,
+    "Reserved (0x000C)"
+   ],
+   [
+    13,
+    "Reserved (0x000D)"
+   ],
+   [
+    14,
+    "Reserved (0x000E)"
+   ],
+   [
+    15,
+    "Parameter missing"
+   ],
+   [
+    16,
+    "Parameterization fault"
+   ],
+   [
+    17,
+    "Power supply fault"
+   ],
+   [
+    18,
+    "Fuse blown / open"
+   ],
+   [
+    19,
+    "Communication fault"
+   ],
+   [
+    20,
+    "Ground fault"
+   ],
+   [
+    21,
+    "Reference point lost"
+   ],
+   [
+    22,
+    "Process event lost"
+   ],
+   [
+    23,
+    "Threshold warning"
+   ],
+   [
+    24,
+    "Output disabled"
+   ],
+   [
+    25,
+    "Functional safety event"
+   ],
+   [
+    26,
+    "External fault"
+   ],
+   [
+    27,
+    "Sensor has incorrect configuration"
+   ],
+   [
+    28,
+    "Reserved (0x001C)"
+   ],
+   [
+    29,
+    "Reserved (0x001D)"
+   ],
+   [
+    30,
+    "Reserved (0x001E)"
+   ],
+   [
+    31,
+    "Temporary fault"
+   ],
+   [
+    32,
+    "Reserved (0x0020)"
+   ],
+   [
+    255,
+    "Reserved (0x00FF)"
+   ],
+   [
+    256,
+    "Manufacturer-specific (0x0100)"
+   ],
+   [
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32768,
+    "Data transmission impossible"
+   ],
+   [
+    32769,
+    "Remote mismatch"
+   ],
+   [
+    32770,
+    "Media redundancy mismatch"
+   ],
+   [
+    32771,
+    "Sync mismatch"
+   ],
+   [
+    32772,
+    "Isochronous mode mismatch"
+   ],
+   [
+    32773,
+    "Multicast CR mismatch"
+   ],
+   [
+    32774,
+    "Reserved (0x8006)"
+   ],
+   [
+    32775,
+    "Fiber optic mismatch"
+   ],
+   [
+    32776,
+    "Network component function mismatch"
+   ],
+   [
+    32777,
+    "Time mismatch"
+   ],
+   [
+    32778,
+    "Dynamic frame packing function mismatch"
+   ],
+   [
+    32779,
+    "Media redundancy with planned duplication mismatch"
+   ],
+   [
+    32780,
+    "System redundancy mismatch"
+   ],
+   [
+    32781,
+    "Multiple interface mismatch"
+   ],
+   [
+    32782,
+    "Reserved (0x800E)"
+   ],
+   [
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    38144,
+    "IO-Link device event"
+   ],
+   [
+    38145,
+    "IO-Link device event (MSB cleared)"
+   ],
+   [
+    38146,
+    "IO-Link port event"
+   ],
+   [
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    40960,
+    "Reserved (0xA000)"
+   ],
+   [
+    65535,
+    "Reserved (0xFFFF)"
+   ]
+  ],
+  "desc": "decode_channel_error_type sweep"
+ },
+ "decode_ext_channel_error_type": {
+  "cases": [
+   [
+    6,
+    0,
+    "Reserved"
+   ],
+   [
+    6,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    6,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    6,
+    32768,
+    "Accumulative info"
+   ],
+   [
+    6,
+    32769,
+    "Reserved (0x8001)"
+   ],
+   [
+    6,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    6,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    6,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    6,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    6,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    6,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    6,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    6,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32768,
+    0,
+    "Reserved"
+   ],
+   [
+    32768,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32768,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32768,
+    32768,
+    "Link state mismatch - Loss of link"
+   ],
+   [
+    32768,
+    32769,
+    "MAUType mismatch"
+   ],
+   [
+    32768,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    32768,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    32768,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32768,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32768,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32768,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32768,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32768,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32769,
+    0,
+    "Reserved"
+   ],
+   [
+    32769,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32769,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32769,
+    32768,
+    "Peer name of station mismatch"
+   ],
+   [
+    32769,
+    32769,
+    "Peer name of port mismatch"
+   ],
+   [
+    32769,
+    32773,
+    "No peer detected"
+   ],
+   [
+    32769,
+    32777,
+    "Peer Fragmentation mismatch"
+   ],
+   [
+    32769,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32769,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32769,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32769,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32769,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32769,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32770,
+    0,
+    "Reserved"
+   ],
+   [
+    32770,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32770,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32770,
+    32768,
+    "Manager role fail"
+   ],
+   [
+    32770,
+    32769,
+    "MRP-Loss of redundancy"
+   ],
+   [
+    32770,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    32770,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    32770,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32770,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32770,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32770,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32770,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32770,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32771,
+    0,
+    "Reserved"
+   ],
+   [
+    32771,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32771,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32771,
+    32768,
+    "No sync message received"
+   ],
+   [
+    32771,
+    32769,
+    "Jitter out of boundary"
+   ],
+   [
+    32771,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    32771,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    32771,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32771,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32771,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32771,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32771,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32771,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32775,
+    0,
+    "Reserved"
+   ],
+   [
+    32775,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32775,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32775,
+    32768,
+    "Power budget exceeded"
+   ],
+   [
+    32775,
+    32769,
+    "Reserved (0x8001)"
+   ],
+   [
+    32775,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    32775,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    32775,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32775,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32775,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32775,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32775,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32775,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32776,
+    0,
+    "Reserved"
+   ],
+   [
+    32776,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32776,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32776,
+    32768,
+    "Frame dropped - no resource"
+   ],
+   [
+    32776,
+    32769,
+    "Frame dropped - wrong destination address"
+   ],
+   [
+    32776,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    32776,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    32776,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32776,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32776,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32776,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32776,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32776,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32777,
+    0,
+    "Reserved"
+   ],
+   [
+    32777,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32777,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32777,
+    32768,
+    "No master detected"
+   ],
+   [
+    32777,
+    32769,
+    "Drift exceeded"
+   ],
+   [
+    32777,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    32777,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    32777,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32777,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32777,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32777,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32777,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32777,
+    65535,
+    "Unknown (0xFFFF)"
+   ],
+   [
+    32779,
+    0,
+    "Reserved"
+   ],
+   [
+    32779,
+    1,
+    "Manufacturer-specific (0x0001)"
+   ],
+   [
+    32779,
+    32767,
+    "Manufacturer-specific (0x7FFF)"
+   ],
+   [
+    32779,
+    32768,
+    "MRPD loss of redundancy"
+   ],
+   [
+    32779,
+    32769,
+    "Reserved (0x8001)"
+   ],
+   [
+    32779,
+    32773,
+    "Reserved (0x8005)"
+   ],
+   [
+    32779,
+    32777,
+    "Reserved (0x8009)"
+   ],
+   [
+    32779,
+    32778,
+    "Reserved (0x800A)"
+   ],
+   [
+    32779,
+    36863,
+    "Reserved (0x8FFF)"
+   ],
+   [
+    32779,
+    36864,
+    "Profile-specific (0x9000)"
+   ],
+   [
+    32779,
+    40959,
+    "Profile-specific (0x9FFF)"
+   ],
+   [
+    32779,
+    40960,
+    "Unknown (0xA000)"
+   ],
+   [
+    32779,
+    65535,
+    "Unknown (0xFFFF)"
+   ]
+  ],
+  "desc": "decode_ext_channel_error_type sweep"
+ },
+ "diag_channel_single": {
+  "api": 0,
+  "desc": "DiagnosisData block hdr + one ChannelDiagnosis USI 0x8000 (line break)",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 1,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": false,
+      "maintenance_required": true,
+      "raw": 2341,
+      "specifier": 1
+     },
+     "error_type": 6,
+     "error_type_name": "Line break",
+     "is_submodule_level": false,
+     "kind": "ChannelDiagnosis",
+     "slot": 0,
+     "subslot": 0
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": true,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "0010000a01000001092580000006",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_empty": {
+  "api": 0,
+  "desc": "empty buffer -> no entries",
+  "expected": {
+   "api": 0,
+   "entries": [],
+   "has_errors": false,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": false,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_ext_channel": {
+  "api": 0,
+  "desc": "block hdr + ExtChannelDiagnosis USI 0x8002 (remote mismatch/no peer)",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 32768,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 0,
+      "maintenance_demanded": false,
+      "maintenance_required": false,
+      "raw": 8197,
+      "specifier": 0
+     },
+     "error_type": 32769,
+     "error_type_name": "Remote mismatch",
+     "ext_add_value": 3735928559,
+     "ext_error_type": 32773,
+     "ext_error_type_name": "No peer detected",
+     "is_submodule_level": true,
+     "kind": "ExtChannelDiagnosis",
+     "slot": 0,
+     "subslot": 0
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": false,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "00100012010080002005800280018005deadbeef",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_mixed_entries": {
+  "api": 0,
+  "desc": "block hdr + Channel + Ext entries, channel numbers with bit15 set so the location-header sniff never fires",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 32769,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": false,
+      "maintenance_required": true,
+      "raw": 2341,
+      "specifier": 1
+     },
+     "error_type": 1,
+     "error_type_name": "Short circuit",
+     "is_submodule_level": false,
+     "kind": "ChannelDiagnosis",
+     "slot": 0,
+     "subslot": 0
+    },
+    {
+     "api": 0,
+     "channel_number": 32770,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": true,
+      "maintenance_required": true,
+      "raw": 2405,
+      "specifier": 1
+     },
+     "error_type": 32768,
+     "error_type_name": "Data transmission impossible",
+     "ext_add_value": 66,
+     "ext_error_type": 32769,
+     "ext_error_type_name": "MAUType mismatch",
+     "is_submodule_level": false,
+     "kind": "ExtChannelDiagnosis",
+     "slot": 0,
+     "subslot": 0
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": true,
+   "has_maintenance_required": true,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "0010001c010080010925800000018002096580028000800100000042",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_no_block_header": {
+  "api": 0,
+  "desc": "no block header: entry parsed from offset 0",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 33059,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": false,
+      "maintenance_required": true,
+      "raw": 2341,
+      "specifier": 1
+     },
+     "error_type": 9,
+     "error_type_name": "Error",
+     "is_submodule_level": false,
+     "kind": "ChannelDiagnosis",
+     "slot": 0,
+     "subslot": 0
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": true,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "8123092580000009",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_qualified_channel": {
+  "api": 0,
+  "desc": "block hdr + QualifiedChannelDiagnosis USI 0x8003 (sync mismatch)",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 2,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": false,
+      "maintenance_required": true,
+      "raw": 2341,
+      "specifier": 1
+     },
+     "error_type": 32771,
+     "error_type_name": "Sync mismatch",
+     "ext_add_value": 4660,
+     "ext_error_type": 32768,
+     "ext_error_type_name": "No sync message received",
+     "is_submodule_level": false,
+     "kind": "QualifiedChannelDiagnosis",
+     "qualifier": 524288,
+     "slot": 0,
+     "subslot": 0
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": true,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "001000160100000209258003800380000000123400080000",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_short": {
+  "api": 0,
+  "desc": "5-byte buffer -> no entries",
+  "expected": {
+   "api": 0,
+   "entries": [],
+   "has_errors": false,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": false,
+   "slot": 2,
+   "subslot": 1
+  },
+  "hex": "0010000a01",
+  "slot": 2,
+  "subslot": 1
+ },
+ "diag_simple": {
+  "api": 0,
+  "desc": "parse_diagnosis_simple: hdr + two flat entries + all-zero terminator",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 1,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": false,
+      "maintenance_required": true,
+      "raw": 2341,
+      "specifier": 1
+     },
+     "error_type": 2,
+     "error_type_name": "Undervoltage",
+     "is_submodule_level": false,
+     "kind": "ChannelDiagnosis",
+     "slot": 1,
+     "subslot": 2
+    },
+    {
+     "api": 0,
+     "channel_number": 32768,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 3,
+      "maintenance_demanded": true,
+      "maintenance_required": true,
+      "raw": 6245,
+      "specifier": 0
+     },
+     "error_type": 32769,
+     "error_type_name": "Remote mismatch",
+     "is_submodule_level": true,
+     "kind": "ChannelDiagnosis",
+     "slot": 1,
+     "subslot": 2
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": true,
+   "has_maintenance_required": true,
+   "slot": 1,
+   "subslot": 2
+  },
+  "hex": "001000100100000109250002800018658001000000000000000409250005",
+  "slot": 1,
+  "subslot": 2
+ },
+ "diag_truncated_ext": {
+  "api": 0,
+  "desc": "ext entry truncated after 4 body bytes -> no entries",
+  "expected": {
+   "api": 0,
+   "entries": [],
+   "has_errors": false,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": false,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "0010000e01008009092580028001",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_unknown_usi": {
+  "api": 0,
+  "desc": "block hdr + unknown USI 0x9123 falls back to a basic channel entry",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 32775,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": false,
+      "maintenance_required": true,
+      "raw": 2341,
+      "specifier": 1
+     },
+     "error_type": 341,
+     "error_type_name": "Manufacturer-specific (0x0155)",
+     "is_submodule_level": false,
+     "kind": "ChannelDiagnosis",
+     "slot": 0,
+     "subslot": 0
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": true,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "0010000a01008007092591230155",
+  "slot": 0,
+  "subslot": 0
+ },
+ "diag_with_location_header": {
+  "api": 0,
+  "desc": "block hdr + API/slot/subslot location header + ChannelDiagnosis",
+  "expected": {
+   "api": 0,
+   "entries": [
+    {
+     "api": 0,
+     "channel_number": 32773,
+     "channel_properties": {
+      "accumulative": 1,
+      "channel_type": 1,
+      "direction": 1,
+      "maintenance_demanded": false,
+      "maintenance_required": true,
+      "raw": 2341,
+      "specifier": 1
+     },
+     "error_type": 16,
+     "error_type_name": "Parameterization fault",
+     "is_submodule_level": false,
+     "kind": "ChannelDiagnosis",
+     "slot": 3,
+     "subslot": 1
+    }
+   ],
+   "has_errors": true,
+   "has_maintenance_demanded": false,
+   "has_maintenance_required": true,
+   "slot": 0,
+   "subslot": 0
+  },
+  "hex": "00100012010000000000000300018005092580000010",
+  "slot": 0,
+  "subslot": 0
+ },
+ "get_alarm_type_name": {
+  "cases": [
+   [
+    0,
+    "Unknown(0x0000)"
+   ],
+   [
+    1,
+    "Diagnosis"
+   ],
+   [
+    2,
+    "Process"
+   ],
+   [
+    3,
+    "Pull"
+   ],
+   [
+    4,
+    "Plug"
+   ],
+   [
+    5,
+    "Status"
+   ],
+   [
+    6,
+    "Update"
+   ],
+   [
+    7,
+    "Redundancy"
+   ],
+   [
+    8,
+    "ControlledBySupervisor"
+   ],
+   [
+    9,
+    "Released"
+   ],
+   [
+    10,
+    "PlugWrongSubmodule"
+   ],
+   [
+    11,
+    "ReturnOfSubmodule"
+   ],
+   [
+    12,
+    "DiagnosisDisappears"
+   ],
+   [
+    13,
+    "MulticastMismatch"
+   ],
+   [
+    14,
+    "PortDataChange"
+   ],
+   [
+    15,
+    "SyncDataChanged"
+   ],
+   [
+    16,
+    "IsochronousModeProblem"
+   ],
+   [
+    17,
+    "NetworkComponentProblem"
+   ],
+   [
+    18,
+    "TimeDataChanged"
+   ],
+   [
+    19,
+    "DynamicFramePackingProblem"
+   ],
+   [
+    20,
+    "Unknown(0x0014)"
+   ],
+   [
+    21,
+    "Unknown(0x0015)"
+   ],
+   [
+    22,
+    "Unknown(0x0016)"
+   ],
+   [
+    23,
+    "Unknown(0x0017)"
+   ],
+   [
+    24,
+    "Unknown(0x0018)"
+   ],
+   [
+    25,
+    "Unknown(0x0019)"
+   ],
+   [
+    26,
+    "Unknown(0x001A)"
+   ],
+   [
+    27,
+    "Unknown(0x001B)"
+   ],
+   [
+    28,
+    "Unknown(0x001C)"
+   ],
+   [
+    29,
+    "Unknown(0x001D)"
+   ],
+   [
+    30,
+    "UploadAndRetrieval"
+   ],
+   [
+    31,
+    "PullModule"
+   ],
+   [
+    32,
+    "Unknown(0x0020)"
+   ],
+   [
+    256,
+    "Unknown(0x0100)"
+   ],
+   [
+    65535,
+    "Unknown(0xFFFF)"
+   ]
+  ],
+  "desc": "get_alarm_type_name sweep"
+ },
+ "get_pe_mode_name": {
+  "cases": [
+   [
+    0,
+    "PE_PowerOff"
+   ],
+   [
+    1,
+    "PE_EnergySavingMode_1"
+   ],
+   [
+    16,
+    "PE_EnergySavingMode_16"
+   ],
+   [
+    31,
+    "PE_EnergySavingMode_31"
+   ],
+   [
+    32,
+    "PE_Reserved(0x20)"
+   ],
+   [
+    239,
+    "PE_Reserved(0xEF)"
+   ],
+   [
+    240,
+    "PE_Operate"
+   ],
+   [
+    241,
+    "PE_Reserved(0xF1)"
+   ],
+   [
+    254,
+    "PE_SleepModeWOL"
+   ],
+   [
+    255,
+    "PE_ReadyToOperate"
+   ]
+  ],
+  "desc": "get_pe_mode_name sweep"
+ },
+ "get_usi_name": {
+  "cases": [
+   [
+    0,
+    "ManufacturerSpecific(0x0000)"
+   ],
+   [
+    4660,
+    "ManufacturerSpecific(0x1234)"
+   ],
+   [
+    32767,
+    "ManufacturerSpecific(0x7FFF)"
+   ],
+   [
+    32768,
+    "ChannelDiagnosis"
+   ],
+   [
+    32769,
+    "MultipleDiagnosis"
+   ],
+   [
+    32770,
+    "ExtChannelDiagnosis"
+   ],
+   [
+    32771,
+    "QualifiedChannelDiagnosis"
+   ],
+   [
+    32772,
+    "Reserved(0x8004)"
+   ],
+   [
+    33024,
+    "MaintenanceItem"
+   ],
+   [
+    33280,
+    "UploadRecord"
+   ],
+   [
+    33281,
+    "iParameterItem"
+   ],
+   [
+    33536,
+    "RS_AlarmItem_Low"
+   ],
+   [
+    33537,
+    "RS_AlarmItem_High"
+   ],
+   [
+    33538,
+    "RS_AlarmItem_Submodule"
+   ],
+   [
+    33552,
+    "PE_AlarmItem"
+   ],
+   [
+    33568,
+    "PRAL_AlarmItem"
+   ],
+   [
+    36864,
+    "ProfileSpecific(0x9000)"
+   ],
+   [
+    40959,
+    "ProfileSpecific(0x9FFF)"
+   ],
+   [
+    40960,
+    "Reserved(0xA000)"
+   ],
+   [
+    65535,
+    "Reserved(0xFFFF)"
+   ]
+  ],
+  "desc": "get_usi_name sweep"
+ },
+ "layer2_ack_frame": {
+  "ack_seq_num": 5,
+  "controller_mac": "020000000001",
+  "controller_ref": 1,
+  "desc": "full L2 AlarmAck frame as _send_layer2_ack (low prio, device_ref 42, controller_ref 1, send_seq 1, recv_seq 5)",
+  "device_mac": "020000000002",
+  "device_ref": 42,
+  "hex": "0200000000020200000000018892fe01002a0001110000010005001680020012010000010000000000010001092300000000",
+  "send_seq_num": 1
+ },
+ "layer2_inbound_alarm_frame": {
+  "controller_ref": 1,
+  "desc": "inbound L2 alarm frame (RTA dst ref 1) wrapping alarm_diag_channel",
+  "device_mac": "020000000002",
+  "hex": "0200000000010200000000028892fe010001002a11000005ffff0024000200200100000100000000000100010000003000000131092300008000000109250006",
+  "rta_send_seq_num": 5
+ },
+ "rta_header": {
+  "ack_seq_num": 6,
+  "add_flags": 0,
+  "alarm_dst_endpoint": 258,
+  "alarm_src_endpoint": 772,
+  "desc": "PNRTAHeader reference bytes (DATA/v1, fixed fields)",
+  "hex": "010203041100000500060016",
+  "pdu_type": 17,
+  "send_seq_num": 5,
+  "var_part_len": 22
+ }
+}
