@@ -1201,13 +1201,266 @@ fn json_str(s: &str) -> String {
     out
 }
 
-/// Emit an `{"type":"error",...}` line for a failed read and keep going.
-fn emit_read_error(read: &str, err: &str) {
-    emit(&format!(
+// ---------------------------------------------------------------------------
+// The emitted line vocabulary.
+//
+// Every line `serve` writes to stdout is built by exactly one function here,
+// and nowhere else. Two reasons for the rule. First, a line built inline in a
+// 400-line loop cannot be tested, so the wire format was only ever checked by
+// reading it. Second, the vocabulary is the protocol: with the builders in one
+// place, the list below *is* the specification a consumer needs, instead of 30
+// format strings and 4 bare literals scattered over 34 emit sites.
+//
+// A builder is a pure function of its arguments and returns the line without
+// the newline. `emit` adds that and flushes.
+// ---------------------------------------------------------------------------
+
+/// `{"type":"error","read":..,"msg":..}` — a named read failed and the session
+/// continues.
+fn error_read_line(read: &str, err: &str) -> String {
+    format!(
         "{{\"type\":\"error\",\"read\":\"{}\",\"msg\":\"{}\"}}",
         json_str(read),
         json_str(err)
-    ));
+    )
+}
+
+/// `{"type":"error","msg":..}` — something failed that is not tied to a
+/// specific read.
+fn error_msg_line(msg: &str) -> String {
+    format!("{{\"type\":\"error\",\"msg\":\"{}\"}}", json_str(msg))
+}
+
+/// `{"type":"error","msg":"bad command: ..","line":..}` — the input line did
+/// not parse. The offending line is echoed so the caller can see what arrived.
+fn bad_command_line(msg: &str, line: &str) -> String {
+    format!(
+        "{{\"type\":\"error\",\"msg\":\"bad command: {}\",\"line\":\"{}\"}}",
+        json_str(msg),
+        json_str(line)
+    )
+}
+
+/// `{"type":"warning","code":..,"msg":..}` — the session is doing something
+/// the caller should know about but that is not an error.
+fn warning_line(code: &str, msg: &str) -> String {
+    format!(
+        "{{\"type\":\"warning\",\"code\":\"{}\",\"msg\":\"{}\"}}",
+        json_str(code),
+        json_str(msg)
+    )
+}
+
+/// `{"proto":N,"type":"hello",..}` — always the first line. `proto` comes
+/// first so a consumer can reject an incompatible server from the first bytes
+/// it sees.
+fn hello_line(station: &str, read_only: bool, gap_ms: u64, cyclic: bool, allow_mask: u8) -> String {
+    format!(
+        "{{\"proto\":{SERVE_PROTO},\"type\":\"hello\",\"station\":\"{}\",\"read_only\":{read_only},\"gap_ms\":{gap_ms},\"cyclic\":{},\"allow_mask\":{allow_mask}}}",
+        json_str(station),
+        cyclic
+    )
+}
+
+/// `{"id":N,"type":"bye"}` — answer to `quit`.
+fn bye_line(id: u64) -> String {
+    format!("{{\"id\":{id},\"type\":\"bye\"}}")
+}
+
+/// `{"id":N,"type":"pong",..}` — answer to `ping`.
+fn pong_line(id: u64, host_us: u128) -> String {
+    format!("{{\"id\":{id},\"type\":\"pong\",\"host_us\":{host_us}}}")
+}
+
+/// `{"id":N,"type":"data",..}` — answer to `read`.
+fn data_line(id: u64, host_us: u128, len: usize, hex: &str) -> String {
+    format!(
+        "{{\"id\":{id},\"type\":\"data\",\"host_us\":{host_us},\"len\":{len},\"hex\":\"{}\"}}",
+        json_str(hex)
+    )
+}
+
+/// `{"id":N,"type":"ok",..}` — answer to `write`.
+fn ok_line(id: u64, host_us: u128) -> String {
+    format!("{{\"id\":{id},\"type\":\"ok\",\"host_us\":{host_us}}}")
+}
+
+/// `{"id":N,"type":"read_error",..}` — the device answered no. `pnio` carries
+/// its status word, which is what tells a caller *why*.
+fn read_error_line(id: u64, host_us: u128, pnio: &str, msg: &str) -> String {
+    format!(
+        "{{\"id\":{id},\"type\":\"read_error\",\"host_us\":{host_us},\"pnio\":\"{}\",\"msg\":\"{}\"}}",
+        json_str(pnio),
+        json_str(msg)
+    )
+}
+
+/// `{"id":N,"type":"transport_error",..}` — the request never got an answer.
+/// Distinct from `read_error` on purpose: this one poisons the session.
+fn transport_error_line(id: u64, host_us: u128, msg: &str) -> String {
+    format!(
+        "{{\"id\":{id},\"type\":\"transport_error\",\"host_us\":{host_us},\"msg\":\"{}\"}}",
+        json_str(msg)
+    )
+}
+
+/// `{"id":N,"type":"refused","reason":"server is read-only"}` — a write
+/// arrived at a `--read-only` server.
+fn refused_read_only_line(id: u64) -> String {
+    format!("{{\"id\":{id},\"type\":\"refused\",\"reason\":\"server is read-only\"}}")
+}
+
+/// `{"type":"refused","reason":..}` — the session will not start. Carries no
+/// id because nothing was requested: these are refusals of the setup itself.
+fn refused_setup_line(reason: &str) -> String {
+    format!(
+        "{{\"type\":\"refused\",\"reason\":\"{}\"}}",
+        json_str(reason)
+    )
+}
+
+/// `{"type":"refused","reason":"control commands need --cyclic","line":..}` —
+/// a control command arrived at an acyclic-only session.
+fn refused_needs_cyclic_line(line: &str) -> String {
+    format!(
+        "{{\"type\":\"refused\",\"reason\":\"control commands need --cyclic\",\"line\":\"{}\"}}",
+        json_str(line)
+    )
+}
+
+/// `{"type":"refused","cmd":..,"mask":..,"reason":..}` — a control command was
+/// understood and not carried out.
+fn refused_cmd_line(cmd: &str, mask: u8, reason: &str) -> String {
+    format!(
+        "{{\"type\":\"refused\",\"cmd\":\"{}\",\"mask\":{mask},\"reason\":\"{}\"}}",
+        json_str(cmd),
+        json_str(reason)
+    )
+}
+
+/// `{"type":"ack","cmd":"set_level",..}` — a level bit was set or cleared.
+/// `level` is the resulting state, not the request.
+fn ack_set_level_line(mask: u8, on: bool, level: u8) -> String {
+    format!(
+        "{{\"type\":\"ack\",\"cmd\":\"set_level\",\"mask\":{mask},\"on\":{on},\"level\":{level}}}"
+    )
+}
+
+/// `{"type":"ack","cmd":"pulse",..}` — a pulse was armed for `pulse_ticks`
+/// output cycles.
+fn ack_pulse_line(mask: u8) -> String {
+    format!("{{\"type\":\"ack\",\"cmd\":\"pulse\",\"mask\":{mask},\"pulse_ticks\":{PULSE_TICKS}}}")
+}
+
+/// `{"type":"ack","cmd":"keepalive"}` — the dead-man timer was reset.
+fn ack_keepalive_line() -> String {
+    "{\"type\":\"ack\",\"cmd\":\"keepalive\"}".to_string()
+}
+
+/// `{"type":"current_output",..}` — the output image as found before takeover.
+fn current_output_line(len: usize, hex: &str) -> String {
+    format!(
+        "{{\"type\":\"current_output\",\"len\":{len},\"hex\":\"{}\"}}",
+        json_str(hex)
+    )
+}
+
+/// `{"type":"cyclic",..}` — one received input frame.
+fn cyclic_line(slot: u16, subslot: u16, host_us: u128, len: usize, hex: &str) -> String {
+    format!(
+        "{{\"type\":\"cyclic\",\"slot\":{slot},\"subslot\":{subslot},\"host_us\":{host_us},\"len\":{len},\"hex\":\"{}\"}}",
+        json_str(hex)
+    )
+}
+
+/// `{"type":"cyclic_started",..}` — the IOCRs are up. `input_len` is the
+/// length the GSDML promised and the firmware confirmed.
+fn cyclic_started_line(
+    cycle_ms: u16,
+    input_frame_id: u16,
+    output_frame_id: u16,
+    input_len: usize,
+    out_slot: u16,
+    out_subslot: u16,
+) -> String {
+    format!(
+        "{{\"type\":\"cyclic_started\",\"cycle_ms\":{cycle_ms},\"input_frame_id\":{input_frame_id},\"output_frame_id\":{output_frame_id},\"input_len\":{input_len},\"out_slot\":{out_slot},\"out_subslot\":{out_subslot}}}"
+    )
+}
+
+/// `{"type":"control_active",..}` — commanding is possible and this is what it
+/// may drive. Goes out even with an all-zero mask: that is how a consumer
+/// learns nothing has been armed.
+fn control_active_line(output_byte: u8, allow_mask: u8) -> String {
+    format!(
+        "{{\"type\":\"control_active\",\"output_byte\":{output_byte},\"allow_mask\":{allow_mask}}}"
+    )
+}
+
+/// `{"type":"output",..}` — the output image was written, with the device's
+/// own readback of it.
+fn output_line(control_byte: u8, safe: bool, readback_hex: &str) -> String {
+    format!(
+        "{{\"type\":\"output\",\"control_byte\":{control_byte},\"safe\":{safe},\"readback_hex\":\"{}\"}}",
+        json_str(readback_hex)
+    )
+}
+
+/// `{"type":"deadman",..}` — a level bit was held with no traffic, so the
+/// session is stopping.
+fn deadman_line() -> String {
+    "{\"type\":\"deadman\",\"msg\":\"no command/keepalive while a level bit is held\"}".to_string()
+}
+
+/// `{"type":"status",..}` — once a second while cyclic frames run.
+fn status_line(tx: u64, rx: u64, missed: u64, out_byte: u8) -> String {
+    format!("{{\"type\":\"status\",\"tx\":{tx},\"rx\":{rx},\"missed\":{missed},\"out_byte\":{out_byte}}}")
+}
+
+/// `{"type":"ar_lost",..}` — the AR died under us.
+fn ar_lost_line(host_us: u128, msg: &str) -> String {
+    format!(
+        "{{\"type\":\"ar_lost\",\"host_us\":{host_us},\"msg\":\"{}\"}}",
+        json_str(msg)
+    )
+}
+
+/// `{"type":"safe_shutdown",..}` — the commanded shutdown ran, with the
+/// device's readback of the safe image and whether it matched.
+fn safe_shutdown_line(reason: &str, verified_safe: bool, readback_hex: &str) -> String {
+    format!(
+        "{{\"type\":\"safe_shutdown\",\"reason\":\"{}\",\"verified_safe\":{verified_safe},\"readback_hex\":\"{}\"}}",
+        json_str(reason),
+        json_str(readback_hex)
+    )
+}
+
+/// The distinct machine-readable alarm for a shutdown that could NOT verify
+/// the safe image. A supervising parent must treat this as "a commanded bit
+/// possibly still set"; it is paired with the non-zero exit code from
+/// [`safe_shutdown_verdict`].
+fn alarm_line(reason: &str, readback_hex: &str) -> String {
+    format!(
+        "{{\"type\":\"alarm\",\"reason\":\"safe output NOT verified\",\
+         \"shutdown_reason\":\"{}\",\"readback_hex\":\"{}\"}}",
+        json_str(reason),
+        json_str(readback_hex)
+    )
+}
+
+/// `{"type":"stopped","exit":N}` — an acyclic-only session ended.
+fn stopped_exit_line(exit: i32) -> String {
+    format!("{{\"type\":\"stopped\",\"exit\":{exit}}}")
+}
+
+/// `{"type":"stopped","tx":..}` — a cyclic session ended, with frame counts.
+fn stopped_stats_line(tx: u64, rx: u64, missed: u64) -> String {
+    format!("{{\"type\":\"stopped\",\"tx\":{tx},\"rx\":{rx},\"missed\":{missed}}}")
+}
+
+/// Emit an `{"type":"error",...}` line for a failed read and keep going.
+fn emit_read_error(read: &str, err: &str) {
+    emit(&error_read_line(read, err));
 }
 
 /// Swap the monitor's read-only Device-Access AR for a full IO AR and start
@@ -1294,11 +1547,7 @@ fn start_cyclic_tier(
         let probe = conn.read_raw(0x8029, out_slot, out_subslot, 128);
         let output_is_safe = match &probe {
             Ok(d) => {
-                emit(&format!(
-                    "{{\"type\":\"current_output\",\"len\":{},\"hex\":\"{}\"}}",
-                    d.len(),
-                    hex_encode(d)
-                ));
+                emit(&current_output_line(d.len(), &hex_encode(d)));
                 parse_output_control_byte(d).is_some_and(|b| b == SAFE_OUTPUT_BYTE)
             }
             Err(e) => {
@@ -1308,7 +1557,9 @@ fn start_cyclic_tier(
         };
         if !output_is_safe {
             conn.release();
-            emit("{\"type\":\"refused\",\"reason\":\"output is not at the safe image or state unknown; refusing takeover\"}");
+            emit(&refused_setup_line(
+                "output is not at the safe image or state unknown; refusing takeover",
+            ));
             return Err(
                 "ownership probe failed: output is not at the safe image or state unknown; \
                  refusing to take over the cyclic AR"
@@ -1363,17 +1614,22 @@ fn start_cyclic_tier(
     // 0x00 into the frame buffer before STOP frames go out.
     cyclic.set_safe_output(out_slot, out_subslot, &[SAFE_OUTPUT_BYTE]);
     cyclic.on_input(|slot, subslot, data| {
-        emit(&format!(
-            "{{\"type\":\"cyclic\",\"slot\":{slot},\"subslot\":{subslot},\"host_us\":{},\"len\":{},\"hex\":\"{}\"}}",
+        emit(&cyclic_line(
+            slot,
+            subslot,
             host_unix_us(),
             data.len(),
-            hex_encode(data)
+            &hex_encode(data),
         ));
     });
     cyclic.start()?;
-    emit(&format!(
-        "{{\"type\":\"cyclic_started\",\"cycle_ms\":{cycle_ms},\"input_frame_id\":{},\"output_frame_id\":{},\"input_len\":{actual},\"out_slot\":{out_slot},\"out_subslot\":{out_subslot}}}",
-        result.input_frame_id, result.output_frame_id
+    emit(&cyclic_started_line(
+        cycle_ms,
+        result.input_frame_id,
+        result.output_frame_id,
+        actual,
+        out_slot,
+        out_subslot,
     ));
     Ok(CyclicTier {
         conn,
@@ -1560,17 +1816,8 @@ fn pnio_status_of(msg: &str) -> Option<String> {
 
 fn serve_emit_error(id: u64, msg: &str) {
     match pnio_status_of(msg) {
-        Some(pnio) => emit(&format!(
-            "{{\"id\":{id},\"type\":\"read_error\",\"host_us\":{},\"pnio\":\"{}\",\"msg\":\"{}\"}}",
-            host_unix_us(),
-            json_str(&pnio),
-            json_str(msg)
-        )),
-        None => emit(&format!(
-            "{{\"id\":{id},\"type\":\"transport_error\",\"host_us\":{},\"msg\":\"{}\"}}",
-            host_unix_us(),
-            json_str(msg)
-        )),
+        Some(pnio) => emit(&read_error_line(id, host_unix_us(), &pnio, msg)),
+        None => emit(&transport_error_line(id, host_unix_us(), msg)),
     }
 }
 
@@ -1639,10 +1886,12 @@ fn cmd_serve(
     SAFE_TO_HARD_EXIT.store(!commanding, Ordering::SeqCst);
 
     let conn = rpc_connect(iface, target, timeout)?;
-    emit(&format!(
-        "{{\"proto\":{SERVE_PROTO},\"type\":\"hello\",\"station\":\"{}\",\"read_only\":{read_only},\"gap_ms\":{gap_ms},\"cyclic\":{},\"allow_mask\":{allow_mask}}}",
-        json_str(target),
-        cyclic.is_some()
+    emit(&hello_line(
+        target,
+        read_only,
+        gap_ms,
+        cyclic.is_some(),
+        allow_mask,
     ));
 
     // Optional cyclic tier. The controller is bound for the life of the loop:
@@ -1652,13 +1901,11 @@ fn cmd_serve(
     let (mut out_slot, mut out_subslot) = (0u16, 0u16);
     let mut conn = match &cyclic {
         Some(c) => {
-            emit(&format!(
-                "{{\"type\":\"warning\",\"code\":\"io_controller_mode\",\"msg\":\"{}\"}}",
-                json_str(
-                    "--cyclic claims the device's single IO AR: this process is now its \
-                     IO-controller and provides the outputs. Any controller that held that \
-                     AR has been displaced. Bench and commissioning only."
-                )
+            emit(&warning_line(
+                "io_controller_mode",
+                "--cyclic claims the device's single IO AR: this process is now its \
+                 IO-controller and provides the outputs. Any controller that held that \
+                 AR has been displaced. Bench and commissioning only.",
             ));
             let tier = start_cyclic_tier(
                 iface,
@@ -1689,10 +1936,7 @@ fn cmd_serve(
                         return;
                     }
                 }
-                Err(msg) => emit(&format!(
-                    "{{\"type\":\"error\",\"msg\":\"{}\"}}",
-                    json_str(msg)
-                )),
+                Err(msg) => emit(&error_msg_line(msg)),
             }
         }
     });
@@ -1720,9 +1964,7 @@ fn cmd_serve(
         // With an all-zero allow mask this still goes out: it is how a
         // consumer learns that commanding is possible in principle but that
         // nothing has been armed.
-        emit(&format!(
-            "{{\"type\":\"control_active\",\"output_byte\":{SAFE_OUTPUT_BYTE},\"allow_mask\":{allow_mask}}}"
-        ));
+        emit(&control_active_line(SAFE_OUTPUT_BYTE, allow_mask));
     }
 
     let stop = 'run: loop {
@@ -1747,11 +1989,7 @@ fn cmd_serve(
             Ok(line) => {
                 last_activity = Instant::now();
                 match parse_serve_line(&line) {
-                    Err(msg) => emit(&format!(
-                        "{{\"type\":\"error\",\"msg\":\"bad command: {}\",\"line\":\"{}\"}}",
-                        json_str(&msg),
-                        json_str(&line)
-                    )),
+                    Err(msg) => emit(&bad_command_line(&msg, &line)),
                     // `quit` is the one control command that still means
                     // something without a cyclic tier: it is how a caller
                     // driving an acyclic-only session says it is done.
@@ -1760,10 +1998,7 @@ fn cmd_serve(
                     }
                     Ok(ServeLine::Control(cmd)) => {
                         if cyclic_ctl.is_none() {
-                            emit(&format!(
-                                "{{\"type\":\"refused\",\"reason\":\"control commands need --cyclic\",\"line\":\"{}\"}}",
-                                json_str(&line)
-                            ));
+                            emit(&refused_needs_cyclic_line(&line));
                         } else if apply_control_cmd(cmd, &mut state, allow_mask) {
                             break 'run ServeStop::Reason("quit");
                         }
@@ -1772,16 +2007,13 @@ fn cmd_serve(
                         let id = cmd.id();
                         match cmd {
                             ServeCmd::Quit { id } => {
-                                emit(&format!("{{\"id\":{id},\"type\":\"bye\"}}"));
+                                emit(&bye_line(id));
                                 break 'run ServeStop::Reason("quit");
                             }
-                            ServeCmd::Ping { id } => emit(&format!(
-                                "{{\"id\":{id},\"type\":\"pong\",\"host_us\":{}}}",
-                                host_unix_us()
-                            )),
-                            ServeCmd::Write { .. } if read_only => emit(&format!(
-                                "{{\"id\":{id},\"type\":\"refused\",\"reason\":\"server is read-only\"}}"
-                            )),
+                            ServeCmd::Ping { id } => emit(&pong_line(id, host_unix_us())),
+                            ServeCmd::Write { .. } if read_only => {
+                                emit(&refused_read_only_line(id))
+                            }
                             ServeCmd::Read {
                                 index,
                                 slot,
@@ -1796,11 +2028,11 @@ fn cmd_serve(
                                     conn.read_raw(index, slot, subslot, len)
                                 });
                                 match r {
-                                    Ok(d) => emit(&format!(
-                                        "{{\"id\":{id},\"type\":\"data\",\"host_us\":{},\"len\":{},\"hex\":\"{}\"}}",
+                                    Ok(d) => emit(&data_line(
+                                        id,
                                         host_unix_us(),
                                         d.len(),
-                                        hex_encode(&d)
+                                        &hex_encode(&d),
                                     )),
                                     Err(e) => {
                                         serve_emit_error(id, &e);
@@ -1822,10 +2054,7 @@ fn cmd_serve(
                                     conn.write(index, slot, subslot, &data)
                                 });
                                 match r {
-                                    Ok(()) => emit(&format!(
-                                        "{{\"id\":{id},\"type\":\"ok\",\"host_us\":{}}}",
-                                        host_unix_us()
-                                    )),
+                                    Ok(()) => emit(&ok_line(id, host_unix_us())),
                                     Err(e) => {
                                         serve_emit_error(id, &e);
                                         if is_transport_failure(&e) {
@@ -1867,10 +2096,7 @@ fn cmd_serve(
             let effective = state.effective();
             if effective != driven_byte {
                 if let Err(e) = ctl.set_output_data(out_slot, out_subslot, &[effective]) {
-                    emit(&format!(
-                        "{{\"type\":\"error\",\"msg\":\"set_output_data failed: {}\"}}",
-                        json_str(&e)
-                    ));
+                    emit(&error_msg_line(&format!("set_output_data failed: {e}")));
                     break 'run ServeStop::Reason("io_error");
                 }
                 driven_byte = effective;
@@ -1881,11 +2107,10 @@ fn cmd_serve(
                     .read_raw(0x8029, out_slot, out_subslot, 128)
                     .map(|d| hex_encode(&d))
                     .unwrap_or_default();
-                emit(&format!(
-                    "{{\"type\":\"output\",\"control_byte\":{effective},\"safe\":{},\
-                     \"readback_hex\":\"{}\"}}",
+                emit(&output_line(
+                    effective,
                     effective == SAFE_OUTPUT_BYTE,
-                    json_str(&readback)
+                    &readback,
                 ));
             }
 
@@ -1903,30 +2128,25 @@ fn cmd_serve(
             // Dead-man: a level bit held plus a silent caller means we are
             // commanding on behalf of something that may be gone.
             if state.level != 0 && last_activity.elapsed() >= CONTROL_DEADMAN {
-                emit("{\"type\":\"deadman\",\"msg\":\"no command/keepalive while a level bit is held\"}");
+                emit(&deadman_line());
                 break 'run ServeStop::Reason("deadman");
             }
 
             if last_status.elapsed() >= Duration::from_secs(1) {
                 last_status = Instant::now();
                 let stats = ctl.stats();
-                emit(&format!(
-                    "{{\"type\":\"status\",\"tx\":{},\"rx\":{},\"missed\":{},\"out_byte\":{}}}",
+                emit(&status_line(
                     stats.frames_sent,
                     stats.frames_received,
                     stats.frames_missed,
-                    state.effective()
+                    state.effective(),
                 ));
             }
         }
     };
 
     if let ServeStop::ArLost(msg) = &stop {
-        emit(&format!(
-            "{{\"type\":\"ar_lost\",\"host_us\":{},\"msg\":\"{}\"}}",
-            host_unix_us(),
-            json_str(msg)
-        ));
+        emit(&ar_lost_line(host_unix_us(), msg));
     }
 
     match cyclic_ctl.as_mut() {
@@ -1945,10 +2165,7 @@ fn cmd_serve(
         }
         None => {
             conn.release();
-            emit(&format!(
-                "{{\"type\":\"stopped\",\"exit\":{}}}",
-                stop.exit_code()
-            ));
+            emit(&stopped_exit_line(stop.exit_code()));
             Ok(stop.exit_code())
         }
     }
@@ -2271,10 +2488,10 @@ fn apply_control_cmd(cmd: ControlCmd, state: &mut ControlState, allow_mask: u8) 
                 ControlCmd::Pulse { .. } => "pulse",
                 _ => "set_level",
             };
-            emit(&format!(
-                "{{\"type\":\"refused\",\"cmd\":\"{}\",\"mask\":{mask},\
-                 \"reason\":\"mask has bits outside --allow-mask (0x{allow_mask:02x})\"}}",
-                json_str(name)
+            emit(&refused_cmd_line(
+                name,
+                mask,
+                &format!("mask has bits outside --allow-mask (0x{allow_mask:02x})"),
             ));
             return false;
         }
@@ -2286,37 +2503,16 @@ fn apply_control_cmd(cmd: ControlCmd, state: &mut ControlState, allow_mask: u8) 
             } else {
                 state.level &= !mask;
             }
-            emit(&format!(
-                "{{\"type\":\"ack\",\"cmd\":\"set_level\",\"mask\":{mask},\"on\":{on},\
-                 \"level\":{}}}",
-                state.level
-            ));
+            emit(&ack_set_level_line(mask, on, state.level));
         }
         ControlCmd::Pulse { mask } => match state.trigger_pulse(mask) {
-            Ok(()) => emit(&format!(
-                "{{\"type\":\"ack\",\"cmd\":\"pulse\",\"mask\":{mask},\"pulse_ticks\":{PULSE_TICKS}}}"
-            )),
-            Err(r) => emit(&format!(
-                "{{\"type\":\"refused\",\"cmd\":\"pulse\",\"mask\":{mask},\"reason\":\"{}\"}}", json_str(r)
-            )),
+            Ok(()) => emit(&ack_pulse_line(mask)),
+            Err(r) => emit(&refused_cmd_line("pulse", mask, r)),
         },
-        ControlCmd::Keepalive => emit("{\"type\":\"ack\",\"cmd\":\"keepalive\"}"),
+        ControlCmd::Keepalive => emit(&ack_keepalive_line()),
         ControlCmd::Quit => return true,
     }
     false
-}
-
-/// The distinct machine-readable alarm for a shutdown that could NOT verify
-/// the safe image. A supervising parent must treat this as "a commanded bit
-/// possibly still set"; it is paired with the non-zero exit code from
-/// [`safe_shutdown_verdict`].
-fn alarm_line(reason: &str, readback_hex: &str) -> String {
-    format!(
-        "{{\"type\":\"alarm\",\"reason\":\"safe output NOT verified\",\
-         \"shutdown_reason\":\"{}\",\"readback_hex\":\"{}\"}}",
-        json_str(reason),
-        json_str(readback_hex)
-    )
 }
 
 /// Map the safe-shutdown outcome to the process result. A verified-safe
@@ -2367,10 +2563,9 @@ fn safe_shutdown(
             }
             match cyclic.set_output_data(out_slot, out_subslot, &[0x00]) {
                 Ok(()) => break,
-                Err(e) => emit(&format!(
-                    "{{\"type\":\"error\",\"msg\":\"safe shutdown set_output_data failed: {}\"}}",
-                    json_str(&e)
-                )),
+                Err(e) => emit(&error_msg_line(&format!(
+                    "safe shutdown set_output_data failed: {e}"
+                ))),
             }
         }
         // >= 3 output cycles of the safe image on the wire, with a floor
@@ -2397,20 +2592,16 @@ fn safe_shutdown(
             }
         }
     }
-    emit(&format!(
-        "{{\"type\":\"safe_shutdown\",\"reason\":\"{}\",\"verified_safe\":{verified},\
-         \"readback_hex\":\"{}\"}}",
-        json_str(reason),
-        json_str(&readback)
-    ));
+    emit(&safe_shutdown_line(reason, verified, &readback));
     if !verified {
         emit(&alarm_line(reason, &readback));
     }
     cyclic.stop_safe(out_slot, out_subslot, &[0x00]);
     let stats = cyclic.stats();
-    emit(&format!(
-        "{{\"type\":\"stopped\",\"tx\":{},\"rx\":{},\"missed\":{}}}",
-        stats.frames_sent, stats.frames_received, stats.frames_missed
+    emit(&stopped_stats_line(
+        stats.frames_sent,
+        stats.frames_received,
+        stats.frames_missed,
     ));
     conn.release();
     verified
@@ -2513,7 +2704,7 @@ fn run(cli: &Cli) -> Result<i32, String> {
                     // Driving outputs displaces whatever controller held the
                     // AR, so arming any bit needs the explicit confirmation.
                     if *allow_mask != 0 && !*i_am_on_the_bench {
-                        emit("{\"type\":\"refused\",\"reason\":\"missing --i-am-on-the-bench\"}");
+                        emit(&refused_setup_line("missing --i-am-on-the-bench"));
                         return Err(
                             "refusing to drive outputs: pass --i-am-on-the-bench to confirm \
                              the device is on a bench with no other IO-controller attached"
@@ -3337,19 +3528,292 @@ mod tests {
     /// from `hex_encode`, a `&'static str`. That is an invariant somebody has
     /// to remember on the next field, and forgetting it emits a line the
     /// consumer silently drops rather than reports.
+    /// The wire format, pinned byte for byte.
+    ///
+    /// One assertion per line shape, 30 of them, and it is the whole
+    /// vocabulary: `no_json_is_assembled_outside_the_line_builders` proves
+    /// nothing else emits, and `the_pinned_shapes_cover_every_builder` proves
+    /// nothing here is missing. Written against the format-string
+    /// implementation and deliberately never edited afterwards, so any later
+    /// rewrite of the builders has to reproduce these bytes exactly rather
+    /// than being blessed by a golden adjusted to fit it.
+    ///
+    /// Values are distinct per field on purpose: swapping two same-typed
+    /// arguments inside a builder changes the output here.
+    #[test]
+    fn emitted_lines_are_pinned() {
+        // Answers to a request, all id-first.
+        assert_eq!(bye_line(7), r#"{"id":7,"type":"bye"}"#);
+        assert_eq!(
+            pong_line(7, 1234),
+            r#"{"id":7,"type":"pong","host_us":1234}"#
+        );
+        assert_eq!(
+            data_line(7, 1234, 3, "a1b2c3"),
+            r#"{"id":7,"type":"data","host_us":1234,"len":3,"hex":"a1b2c3"}"#
+        );
+        assert_eq!(ok_line(7, 1234), r#"{"id":7,"type":"ok","host_us":1234}"#);
+        assert_eq!(
+            read_error_line(7, 1234, "DE80B900", "wrong length"),
+            r#"{"id":7,"type":"read_error","host_us":1234,"pnio":"DE80B900","msg":"wrong length"}"#
+        );
+        assert_eq!(
+            transport_error_line(7, 1234, "no answer"),
+            r#"{"id":7,"type":"transport_error","host_us":1234,"msg":"no answer"}"#
+        );
+        assert_eq!(
+            refused_read_only_line(7),
+            r#"{"id":7,"type":"refused","reason":"server is read-only"}"#
+        );
+
+        // Session framing.
+        assert_eq!(
+            hello_line("demo", true, 30, false, 6),
+            r#"{"proto":5,"type":"hello","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}"#
+        );
+        assert_eq!(stopped_exit_line(0), r#"{"type":"stopped","exit":0}"#);
+        assert_eq!(
+            stopped_stats_line(11, 12, 13),
+            r#"{"type":"stopped","tx":11,"rx":12,"missed":13}"#
+        );
+
+        // Diagnostics.
+        assert_eq!(
+            error_read_line("uptime", "timeout"),
+            r#"{"type":"error","read":"uptime","msg":"timeout"}"#
+        );
+        assert_eq!(error_msg_line("nope"), r#"{"type":"error","msg":"nope"}"#);
+        assert_eq!(
+            bad_command_line("no id", "{}"),
+            r#"{"type":"error","msg":"bad command: no id","line":"{}"}"#
+        );
+        assert_eq!(
+            warning_line("io_controller_mode", "displaced"),
+            r#"{"type":"warning","code":"io_controller_mode","msg":"displaced"}"#
+        );
+        assert_eq!(
+            ar_lost_line(1234, "cable"),
+            r#"{"type":"ar_lost","host_us":1234,"msg":"cable"}"#
+        );
+
+        // Refusals that carry no id.
+        assert_eq!(
+            refused_setup_line("missing --i-am-on-the-bench"),
+            r#"{"type":"refused","reason":"missing --i-am-on-the-bench"}"#
+        );
+        assert_eq!(
+            refused_needs_cyclic_line("{\"cmd\":\"pulse\"}"),
+            r#"{"type":"refused","reason":"control commands need --cyclic","line":"{\"cmd\":\"pulse\"}"}"#
+        );
+        assert_eq!(
+            refused_cmd_line("pulse", 6, "a pulse is already running"),
+            r#"{"type":"refused","cmd":"pulse","mask":6,"reason":"a pulse is already running"}"#
+        );
+
+        // The command layer.
+        assert_eq!(
+            ack_set_level_line(4, true, 6),
+            r#"{"type":"ack","cmd":"set_level","mask":4,"on":true,"level":6}"#
+        );
+        assert_eq!(
+            ack_pulse_line(2),
+            r#"{"type":"ack","cmd":"pulse","mask":2,"pulse_ticks":3}"#
+        );
+        assert_eq!(ack_keepalive_line(), r#"{"type":"ack","cmd":"keepalive"}"#);
+        assert_eq!(
+            control_active_line(0, 6),
+            r#"{"type":"control_active","output_byte":0,"allow_mask":6}"#
+        );
+        assert_eq!(
+            output_line(4, false, "0004"),
+            r#"{"type":"output","control_byte":4,"safe":false,"readback_hex":"0004"}"#
+        );
+        assert_eq!(
+            deadman_line(),
+            r#"{"type":"deadman","msg":"no command/keepalive while a level bit is held"}"#
+        );
+
+        // The cyclic tier.
+        assert_eq!(
+            current_output_line(2, "0000"),
+            r#"{"type":"current_output","len":2,"hex":"0000"}"#
+        );
+        assert_eq!(
+            cyclic_line(1, 2, 1234, 3, "aabbcc"),
+            r#"{"type":"cyclic","slot":1,"subslot":2,"host_us":1234,"len":3,"hex":"aabbcc"}"#
+        );
+        assert_eq!(
+            cyclic_started_line(16, 0x8001, 0x8002, 40, 1, 2),
+            r#"{"type":"cyclic_started","cycle_ms":16,"input_frame_id":32769,"output_frame_id":32770,"input_len":40,"out_slot":1,"out_subslot":2}"#
+        );
+        assert_eq!(
+            status_line(11, 12, 13, 4),
+            r#"{"type":"status","tx":11,"rx":12,"missed":13,"out_byte":4}"#
+        );
+
+        // Shutdown.
+        assert_eq!(
+            safe_shutdown_line("quit", true, "0000"),
+            r#"{"type":"safe_shutdown","reason":"quit","verified_safe":true,"readback_hex":"0000"}"#
+        );
+        assert_eq!(
+            alarm_line("signal", "0004"),
+            r#"{"type":"alarm","reason":"safe output NOT verified","shutdown_reason":"signal","readback_hex":"0004"}"#
+        );
+    }
+
+    /// Where the pinned region ends. Named so the test that depends on it
+    /// fails loudly if this comment is reworded.
+    const END_OF_PIN_TEST: &str = "\n    /// Where the pinned region ends.";
+
+    /// Does `haystack` call `name` as a whole identifier? A bare substring
+    /// search matches a longer builder name ending in the same word.
+    fn calls_by_name(haystack: &str, name: &str) -> bool {
+        let needle = format!("{name}(");
+        haystack.match_indices(&needle).any(|(i, _)| {
+            i == 0
+                || !haystack[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    }
+
+    /// Collect the line builders straight from the source: a function whose
+    /// name ends in `_line` and that returns a `String`. The naming rule is
+    /// what makes the two tests below decidable without a hand-kept list that
+    /// could go stale.
+    fn line_builders(production: &str) -> Vec<&str> {
+        production
+            .split("\nfn ")
+            .skip(1)
+            .filter_map(|f| {
+                let (signature, _) = f.split_once('{')?;
+                let name = signature.split('(').next()?;
+                // The signature may span several lines, so split at the brace
+                // rather than at the newline.
+                (name.ends_with("_line") && signature.contains("-> String")).then_some(name)
+            })
+            .collect()
+    }
+
+    fn production_source() -> &'static str {
+        let src = include_str!("profinet.rs");
+        &src[..src.find("\n#[cfg(test)]").expect("test module")]
+    }
+
+    /// The rule the vocabulary rests on: JSON is assembled in the line
+    /// builders and nowhere else.
+    ///
+    /// Without this, the pinned shapes above prove only that the builders are
+    /// right — an emit site that keeps building its own line, or a new one
+    /// added later, would pass every assertion while emitting something no
+    /// test has ever seen. Checking the source is the only way to check a
+    /// negative like this.
+    ///
+    /// Three ways to build a line are looked for: an escaped literal
+    /// (`\"type\"`), a raw one (`r#"{"type":…`), and reaching for the
+    /// serialiser directly (`json!`, `serde_json::to_string`). Comments are
+    /// stripped first, because the builders' own documentation quotes the wire
+    /// format. What is left uncovered is a literal split across pieces so no
+    /// single one spells a key — text matching cannot see that, and it is not
+    /// something anybody does by accident.
+    #[test]
+    fn no_json_is_assembled_outside_the_line_builders() {
+        let production = production_source();
+        let builders = line_builders(production);
+        assert!(
+            builders.len() > 20,
+            "the builder scan found almost nothing, so this test would pass vacuously: {builders:?}"
+        );
+
+        let mut current = "";
+        let mut offenders = Vec::new();
+        for (n, line) in production.lines().enumerate() {
+            if let Some(rest) = line.strip_prefix("fn ") {
+                // Split on `<` too, so a generic function is recognised by its
+                // bare name.
+                current = rest.split(['(', '<']).next().unwrap_or("");
+            }
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            let assembles_json = code.contains("\\\"type\\\"")
+                || code.contains("\\\"proto\\\"")
+                || code.contains("{\"type\"")
+                || code.contains("json!(");
+            // `serde_json::to_string` belongs to `json_line` alone; anywhere
+            // else it is a line being serialised outside the vocabulary.
+            let serialises = code.contains("serde_json::to_string") && current != "json_line";
+            if (assembles_json || serialises) && !builders.contains(&current) {
+                offenders.push(format!("{}: {} (in {current})", n + 1, code));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "JSON assembled outside a line builder:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// Every builder is pinned. Guards the other direction: a builder added
+    /// without a pinned shape would otherwise never be checked against the
+    /// wire format at all.
+    #[test]
+    fn the_pinned_shapes_cover_every_builder() {
+        let src = include_str!("profinet.rs");
+        let pinned = {
+            let start = src.find("fn emitted_lines_are_pinned").expect("pin test");
+            let rest = &src[start..];
+            // `expect`, not `unwrap_or(rest.len())`: rewording the marker must
+            // fail loudly. Falling back to the end of the file would silently
+            // stretch the region over the hostile-content test, which calls
+            // nearly every builder, and this check would pass forever.
+            let end = rest
+                .find(END_OF_PIN_TEST)
+                .expect("the pin test's end marker moved, so the region is wrong");
+            &rest[..end]
+        };
+        let missing: Vec<&str> = line_builders(production_source())
+            .into_iter()
+            // A plain `contains("{name}(")` would let a new builder named
+            // `cmd_line` ride on the pinned `refused_cmd_line(`, so require
+            // that the match does not continue an identifier to the left.
+            .filter(|name| !calls_by_name(pinned, name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "builders with no pinned shape: {missing:?}"
+        );
+    }
+
     #[test]
     fn every_emitted_string_survives_hostile_content() {
         let nasty = "he said \"stop\"\n\tand \\ left\u{1}";
+        // Every builder that carries text this process did not author: device
+        // messages, PNIO status words, the station name off the command line,
+        // an echoed input line. Calling the builders rather than restating
+        // their format strings is deliberate — a hand-copied literal here
+        // would drift away from the real one without any test noticing.
         for (label, line) in [
+            ("error_read", error_read_line(nasty, nasty)),
+            ("error_msg", error_msg_line(nasty)),
+            ("bad_command", bad_command_line(nasty, nasty)),
+            ("warning", warning_line(nasty, nasty)),
+            ("hello", hello_line(nasty, true, 30, false, 6)),
+            ("read_error", read_error_line(1, 2, nasty, nasty)),
+            ("transport_error", transport_error_line(1, 2, nasty)),
+            ("refused_setup", refused_setup_line(nasty)),
+            ("refused_needs_cyclic", refused_needs_cyclic_line(nasty)),
+            ("refused_cmd", refused_cmd_line(nasty, 6, nasty)),
+            ("ar_lost", ar_lost_line(2, nasty)),
+            ("data", data_line(1, 2, 3, nasty)),
+            ("cyclic", cyclic_line(1, 2, 3, 4, nasty)),
+            ("current_output", current_output_line(2, nasty)),
+            ("output", output_line(4, false, nasty)),
+            ("safe_shutdown", safe_shutdown_line(nasty, true, nasty)),
             ("alarm", alarm_line(nasty, nasty)),
-            (
-                "read_error",
-                format!(
-                    "{{\"type\":\"error\",\"read\":\"{}\",\"msg\":\"{}\"}}",
-                    json_str(nasty),
-                    json_str(nasty)
-                ),
-            ),
         ] {
             // The consumer parses these with serde_json, so valid JSON is the
             // contract, not merely "looks about right".
@@ -3359,8 +3823,7 @@ mod tests {
         }
 
         // And the escaping round-trips: what goes in comes back out.
-        let line = alarm_line(nasty, "00ff");
-        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&alarm_line(nasty, "00ff")).unwrap();
         assert_eq!(v["shutdown_reason"].as_str(), Some(nasty));
         assert_eq!(v["readback_hex"].as_str(), Some("00ff"));
     }
