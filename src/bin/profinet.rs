@@ -21,6 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 
 use profinet_rs::connect::IocrSetup;
 use profinet_rs::cyclic::{CyclicController, CyclicState};
@@ -1186,21 +1187,6 @@ fn emit(line: &str) {
     let _ = out.flush();
 }
 
-/// Escape a string for a JSON string value.
-fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 // ---------------------------------------------------------------------------
 // The emitted line vocabulary.
 //
@@ -1213,168 +1199,448 @@ fn json_str(s: &str) -> String {
 //
 // A builder is a pure function of its arguments and returns the line without
 // the newline. `emit` adds that and flushes.
+//
+// Each one serialises a struct rather than writing a format string. The point
+// is not brevity — the structs are longer — but that the shape stops being a
+// string. Field names, the tag and the nesting are checked by the compiler,
+// escaping happens structurally instead of through a helper every site has to
+// remember to call, and the struct list is a protocol specification that cannot
+// drift from what the code emits. Field order is declaration order, which is
+// how the wire format survived the change to serde: every line is byte for byte
+// what the format strings produced, with one exception that
+// `control_characters_use_the_short_escapes` pins.
 // ---------------------------------------------------------------------------
+
+/// The wire tag of an emitted line. Naming it here is what makes a tag a value
+/// the compiler knows rather than a literal repeated at every emit site.
+#[derive(Debug, Serialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum Tag {
+    Ack,
+    Alarm,
+    ArLost,
+    Bye,
+    ControlActive,
+    CurrentOutput,
+    Cyclic,
+    CyclicStarted,
+    Data,
+    Deadman,
+    Error,
+    Hello,
+    Ok,
+    Output,
+    Pong,
+    ReadError,
+    Refused,
+    SafeShutdown,
+    Status,
+    Stopped,
+    TransportError,
+    Warning,
+}
+
+/// Serialise one line.
+///
+/// The `expect` cannot fire: `serde_json` only fails on a map with non-string
+/// keys, a float that is NaN or infinite, or a `Serialize` implementation that
+/// returns an error itself. Every type below is a flat struct of integers,
+/// booleans and string slices, so none of the three is reachable. Saying that
+/// out loud is better than an `unwrap_or_default` that would silently emit an
+/// empty line if the reasoning were ever wrong.
+fn json_line<T: Serialize>(line: &T) -> String {
+    serde_json::to_string(line).expect("a flat struct of integers, bools and strs cannot fail")
+}
 
 /// `{"type":"error","read":..,"msg":..}` — a named read failed and the session
 /// continues.
+#[derive(Serialize)]
+struct ErrorRead<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    read: &'a str,
+    msg: &'a str,
+}
+
 fn error_read_line(read: &str, err: &str) -> String {
-    format!(
-        "{{\"type\":\"error\",\"read\":\"{}\",\"msg\":\"{}\"}}",
-        json_str(read),
-        json_str(err)
-    )
+    json_line(&ErrorRead {
+        tag: Tag::Error,
+        read,
+        msg: err,
+    })
 }
 
 /// `{"type":"error","msg":..}` — something failed that is not tied to a
 /// specific read.
+#[derive(Serialize)]
+struct ErrorMsg<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    msg: &'a str,
+}
+
 fn error_msg_line(msg: &str) -> String {
-    format!("{{\"type\":\"error\",\"msg\":\"{}\"}}", json_str(msg))
+    json_line(&ErrorMsg {
+        tag: Tag::Error,
+        msg,
+    })
 }
 
 /// `{"type":"error","msg":"bad command: ..","line":..}` — the input line did
 /// not parse. The offending line is echoed so the caller can see what arrived.
+#[derive(Serialize)]
+struct BadCommand<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    msg: String,
+    line: &'a str,
+}
+
 fn bad_command_line(msg: &str, line: &str) -> String {
-    format!(
-        "{{\"type\":\"error\",\"msg\":\"bad command: {}\",\"line\":\"{}\"}}",
-        json_str(msg),
-        json_str(line)
-    )
+    json_line(&BadCommand {
+        tag: Tag::Error,
+        msg: format!("bad command: {msg}"),
+        line,
+    })
 }
 
 /// `{"type":"warning","code":..,"msg":..}` — the session is doing something
 /// the caller should know about but that is not an error.
+#[derive(Serialize)]
+struct Warning<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    code: &'a str,
+    msg: &'a str,
+}
+
 fn warning_line(code: &str, msg: &str) -> String {
-    format!(
-        "{{\"type\":\"warning\",\"code\":\"{}\",\"msg\":\"{}\"}}",
-        json_str(code),
-        json_str(msg)
-    )
+    json_line(&Warning {
+        tag: Tag::Warning,
+        code,
+        msg,
+    })
 }
 
 /// `{"proto":N,"type":"hello",..}` — always the first line. `proto` comes
 /// first so a consumer can reject an incompatible server from the first bytes
 /// it sees.
+#[derive(Serialize)]
+struct Hello<'a> {
+    proto: u32,
+    #[serde(rename = "type")]
+    tag: Tag,
+    station: &'a str,
+    read_only: bool,
+    gap_ms: u64,
+    cyclic: bool,
+    allow_mask: u8,
+}
+
 fn hello_line(station: &str, read_only: bool, gap_ms: u64, cyclic: bool, allow_mask: u8) -> String {
-    format!(
-        "{{\"proto\":{SERVE_PROTO},\"type\":\"hello\",\"station\":\"{}\",\"read_only\":{read_only},\"gap_ms\":{gap_ms},\"cyclic\":{},\"allow_mask\":{allow_mask}}}",
-        json_str(station),
-        cyclic
-    )
+    json_line(&Hello {
+        proto: SERVE_PROTO,
+        tag: Tag::Hello,
+        station,
+        read_only,
+        gap_ms,
+        cyclic,
+        allow_mask,
+    })
 }
 
 /// `{"id":N,"type":"bye"}` — answer to `quit`.
+#[derive(Serialize)]
+struct Bye {
+    id: u64,
+    #[serde(rename = "type")]
+    tag: Tag,
+}
+
 fn bye_line(id: u64) -> String {
-    format!("{{\"id\":{id},\"type\":\"bye\"}}")
+    json_line(&Bye { id, tag: Tag::Bye })
 }
 
 /// `{"id":N,"type":"pong",..}` — answer to `ping`.
+#[derive(Serialize)]
+struct Pong {
+    id: u64,
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+}
+
 fn pong_line(id: u64, host_us: u128) -> String {
-    format!("{{\"id\":{id},\"type\":\"pong\",\"host_us\":{host_us}}}")
+    json_line(&Pong {
+        id,
+        tag: Tag::Pong,
+        host_us,
+    })
 }
 
 /// `{"id":N,"type":"data",..}` — answer to `read`.
+#[derive(Serialize)]
+struct Data<'a> {
+    id: u64,
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+    len: usize,
+    hex: &'a str,
+}
+
 fn data_line(id: u64, host_us: u128, len: usize, hex: &str) -> String {
-    format!(
-        "{{\"id\":{id},\"type\":\"data\",\"host_us\":{host_us},\"len\":{len},\"hex\":\"{}\"}}",
-        json_str(hex)
-    )
+    json_line(&Data {
+        id,
+        tag: Tag::Data,
+        host_us,
+        len,
+        hex,
+    })
 }
 
 /// `{"id":N,"type":"ok",..}` — answer to `write`.
+#[derive(Serialize)]
+struct WriteOk {
+    id: u64,
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+}
+
 fn ok_line(id: u64, host_us: u128) -> String {
-    format!("{{\"id\":{id},\"type\":\"ok\",\"host_us\":{host_us}}}")
+    json_line(&WriteOk {
+        id,
+        tag: Tag::Ok,
+        host_us,
+    })
 }
 
 /// `{"id":N,"type":"read_error",..}` — the device answered no. `pnio` carries
 /// its status word, which is what tells a caller *why*.
+#[derive(Serialize)]
+struct ReadError<'a> {
+    id: u64,
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+    pnio: &'a str,
+    msg: &'a str,
+}
+
 fn read_error_line(id: u64, host_us: u128, pnio: &str, msg: &str) -> String {
-    format!(
-        "{{\"id\":{id},\"type\":\"read_error\",\"host_us\":{host_us},\"pnio\":\"{}\",\"msg\":\"{}\"}}",
-        json_str(pnio),
-        json_str(msg)
-    )
+    json_line(&ReadError {
+        id,
+        tag: Tag::ReadError,
+        host_us,
+        pnio,
+        msg,
+    })
 }
 
 /// `{"id":N,"type":"transport_error",..}` — the request never got an answer.
 /// Distinct from `read_error` on purpose: this one poisons the session.
+#[derive(Serialize)]
+struct TransportError<'a> {
+    id: u64,
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+    msg: &'a str,
+}
+
 fn transport_error_line(id: u64, host_us: u128, msg: &str) -> String {
-    format!(
-        "{{\"id\":{id},\"type\":\"transport_error\",\"host_us\":{host_us},\"msg\":\"{}\"}}",
-        json_str(msg)
-    )
+    json_line(&TransportError {
+        id,
+        tag: Tag::TransportError,
+        host_us,
+        msg,
+    })
 }
 
 /// `{"id":N,"type":"refused","reason":"server is read-only"}` — a write
 /// arrived at a `--read-only` server.
+#[derive(Serialize)]
+struct RefusedWithId {
+    id: u64,
+    #[serde(rename = "type")]
+    tag: Tag,
+    reason: &'static str,
+}
+
 fn refused_read_only_line(id: u64) -> String {
-    format!("{{\"id\":{id},\"type\":\"refused\",\"reason\":\"server is read-only\"}}")
+    json_line(&RefusedWithId {
+        id,
+        tag: Tag::Refused,
+        reason: "server is read-only",
+    })
 }
 
 /// `{"type":"refused","reason":..}` — the session will not start. Carries no
 /// id because nothing was requested: these are refusals of the setup itself.
+#[derive(Serialize)]
+struct RefusedSetup<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    reason: &'a str,
+}
+
 fn refused_setup_line(reason: &str) -> String {
-    format!(
-        "{{\"type\":\"refused\",\"reason\":\"{}\"}}",
-        json_str(reason)
-    )
+    json_line(&RefusedSetup {
+        tag: Tag::Refused,
+        reason,
+    })
 }
 
 /// `{"type":"refused","reason":"control commands need --cyclic","line":..}` —
 /// a control command arrived at an acyclic-only session.
+#[derive(Serialize)]
+struct RefusedNeedsCyclic<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    reason: &'static str,
+    line: &'a str,
+}
+
 fn refused_needs_cyclic_line(line: &str) -> String {
-    format!(
-        "{{\"type\":\"refused\",\"reason\":\"control commands need --cyclic\",\"line\":\"{}\"}}",
-        json_str(line)
-    )
+    json_line(&RefusedNeedsCyclic {
+        tag: Tag::Refused,
+        reason: "control commands need --cyclic",
+        line,
+    })
 }
 
 /// `{"type":"refused","cmd":..,"mask":..,"reason":..}` — a control command was
 /// understood and not carried out.
+#[derive(Serialize)]
+struct RefusedCmd<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    cmd: &'a str,
+    mask: u8,
+    reason: &'a str,
+}
+
 fn refused_cmd_line(cmd: &str, mask: u8, reason: &str) -> String {
-    format!(
-        "{{\"type\":\"refused\",\"cmd\":\"{}\",\"mask\":{mask},\"reason\":\"{}\"}}",
-        json_str(cmd),
-        json_str(reason)
-    )
+    json_line(&RefusedCmd {
+        tag: Tag::Refused,
+        cmd,
+        mask,
+        reason,
+    })
 }
 
 /// `{"type":"ack","cmd":"set_level",..}` — a level bit was set or cleared.
 /// `level` is the resulting state, not the request.
+#[derive(Serialize)]
+struct AckSetLevel {
+    #[serde(rename = "type")]
+    tag: Tag,
+    cmd: &'static str,
+    mask: u8,
+    on: bool,
+    level: u8,
+}
+
 fn ack_set_level_line(mask: u8, on: bool, level: u8) -> String {
-    format!(
-        "{{\"type\":\"ack\",\"cmd\":\"set_level\",\"mask\":{mask},\"on\":{on},\"level\":{level}}}"
-    )
+    json_line(&AckSetLevel {
+        tag: Tag::Ack,
+        cmd: "set_level",
+        mask,
+        on,
+        level,
+    })
 }
 
 /// `{"type":"ack","cmd":"pulse",..}` — a pulse was armed for `pulse_ticks`
 /// output cycles.
+#[derive(Serialize)]
+struct AckPulse {
+    #[serde(rename = "type")]
+    tag: Tag,
+    cmd: &'static str,
+    mask: u8,
+    pulse_ticks: u32,
+}
+
 fn ack_pulse_line(mask: u8) -> String {
-    format!("{{\"type\":\"ack\",\"cmd\":\"pulse\",\"mask\":{mask},\"pulse_ticks\":{PULSE_TICKS}}}")
+    json_line(&AckPulse {
+        tag: Tag::Ack,
+        cmd: "pulse",
+        mask,
+        pulse_ticks: PULSE_TICKS,
+    })
 }
 
 /// `{"type":"ack","cmd":"keepalive"}` — the dead-man timer was reset.
+#[derive(Serialize)]
+struct AckPlain {
+    #[serde(rename = "type")]
+    tag: Tag,
+    cmd: &'static str,
+}
+
 fn ack_keepalive_line() -> String {
-    "{\"type\":\"ack\",\"cmd\":\"keepalive\"}".to_string()
+    json_line(&AckPlain {
+        tag: Tag::Ack,
+        cmd: "keepalive",
+    })
 }
 
 /// `{"type":"current_output",..}` — the output image as found before takeover.
+#[derive(Serialize)]
+struct CurrentOutput<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    len: usize,
+    hex: &'a str,
+}
+
 fn current_output_line(len: usize, hex: &str) -> String {
-    format!(
-        "{{\"type\":\"current_output\",\"len\":{len},\"hex\":\"{}\"}}",
-        json_str(hex)
-    )
+    json_line(&CurrentOutput {
+        tag: Tag::CurrentOutput,
+        len,
+        hex,
+    })
 }
 
 /// `{"type":"cyclic",..}` — one received input frame.
+#[derive(Serialize)]
+struct Cyclic<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    slot: u16,
+    subslot: u16,
+    host_us: u128,
+    len: usize,
+    hex: &'a str,
+}
+
 fn cyclic_line(slot: u16, subslot: u16, host_us: u128, len: usize, hex: &str) -> String {
-    format!(
-        "{{\"type\":\"cyclic\",\"slot\":{slot},\"subslot\":{subslot},\"host_us\":{host_us},\"len\":{len},\"hex\":\"{}\"}}",
-        json_str(hex)
-    )
+    json_line(&Cyclic {
+        tag: Tag::Cyclic,
+        slot,
+        subslot,
+        host_us,
+        len,
+        hex,
+    })
 }
 
 /// `{"type":"cyclic_started",..}` — the IOCRs are up. `input_len` is the
 /// length the GSDML promised and the firmware confirmed.
+#[derive(Serialize)]
+struct CyclicStarted {
+    #[serde(rename = "type")]
+    tag: Tag,
+    cycle_ms: u16,
+    input_frame_id: u16,
+    output_frame_id: u16,
+    input_len: usize,
+    out_slot: u16,
+    out_subslot: u16,
+}
+
 fn cyclic_started_line(
     cycle_ms: u16,
     input_frame_id: u16,
@@ -1383,79 +1649,184 @@ fn cyclic_started_line(
     out_slot: u16,
     out_subslot: u16,
 ) -> String {
-    format!(
-        "{{\"type\":\"cyclic_started\",\"cycle_ms\":{cycle_ms},\"input_frame_id\":{input_frame_id},\"output_frame_id\":{output_frame_id},\"input_len\":{input_len},\"out_slot\":{out_slot},\"out_subslot\":{out_subslot}}}"
-    )
+    json_line(&CyclicStarted {
+        tag: Tag::CyclicStarted,
+        cycle_ms,
+        input_frame_id,
+        output_frame_id,
+        input_len,
+        out_slot,
+        out_subslot,
+    })
 }
 
 /// `{"type":"control_active",..}` — commanding is possible and this is what it
 /// may drive. Goes out even with an all-zero mask: that is how a consumer
 /// learns nothing has been armed.
+#[derive(Serialize)]
+struct ControlActive {
+    #[serde(rename = "type")]
+    tag: Tag,
+    output_byte: u8,
+    allow_mask: u8,
+}
+
 fn control_active_line(output_byte: u8, allow_mask: u8) -> String {
-    format!(
-        "{{\"type\":\"control_active\",\"output_byte\":{output_byte},\"allow_mask\":{allow_mask}}}"
-    )
+    json_line(&ControlActive {
+        tag: Tag::ControlActive,
+        output_byte,
+        allow_mask,
+    })
 }
 
 /// `{"type":"output",..}` — the output image was written, with the device's
 /// own readback of it.
+#[derive(Serialize)]
+struct Output<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    control_byte: u8,
+    safe: bool,
+    readback_hex: &'a str,
+}
+
 fn output_line(control_byte: u8, safe: bool, readback_hex: &str) -> String {
-    format!(
-        "{{\"type\":\"output\",\"control_byte\":{control_byte},\"safe\":{safe},\"readback_hex\":\"{}\"}}",
-        json_str(readback_hex)
-    )
+    json_line(&Output {
+        tag: Tag::Output,
+        control_byte,
+        safe,
+        readback_hex,
+    })
 }
 
 /// `{"type":"deadman",..}` — a level bit was held with no traffic, so the
 /// session is stopping.
+#[derive(Serialize)]
+struct Deadman {
+    #[serde(rename = "type")]
+    tag: Tag,
+    msg: &'static str,
+}
+
 fn deadman_line() -> String {
-    "{\"type\":\"deadman\",\"msg\":\"no command/keepalive while a level bit is held\"}".to_string()
+    json_line(&Deadman {
+        tag: Tag::Deadman,
+        msg: "no command/keepalive while a level bit is held",
+    })
 }
 
 /// `{"type":"status",..}` — once a second while cyclic frames run.
+#[derive(Serialize)]
+struct Status {
+    #[serde(rename = "type")]
+    tag: Tag,
+    tx: u64,
+    rx: u64,
+    missed: u64,
+    out_byte: u8,
+}
+
 fn status_line(tx: u64, rx: u64, missed: u64, out_byte: u8) -> String {
-    format!("{{\"type\":\"status\",\"tx\":{tx},\"rx\":{rx},\"missed\":{missed},\"out_byte\":{out_byte}}}")
+    json_line(&Status {
+        tag: Tag::Status,
+        tx,
+        rx,
+        missed,
+        out_byte,
+    })
 }
 
 /// `{"type":"ar_lost",..}` — the AR died under us.
+#[derive(Serialize)]
+struct ArLost<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+    msg: &'a str,
+}
+
 fn ar_lost_line(host_us: u128, msg: &str) -> String {
-    format!(
-        "{{\"type\":\"ar_lost\",\"host_us\":{host_us},\"msg\":\"{}\"}}",
-        json_str(msg)
-    )
+    json_line(&ArLost {
+        tag: Tag::ArLost,
+        host_us,
+        msg,
+    })
 }
 
 /// `{"type":"safe_shutdown",..}` — the commanded shutdown ran, with the
 /// device's readback of the safe image and whether it matched.
+#[derive(Serialize)]
+struct SafeShutdown<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    reason: &'a str,
+    verified_safe: bool,
+    readback_hex: &'a str,
+}
+
 fn safe_shutdown_line(reason: &str, verified_safe: bool, readback_hex: &str) -> String {
-    format!(
-        "{{\"type\":\"safe_shutdown\",\"reason\":\"{}\",\"verified_safe\":{verified_safe},\"readback_hex\":\"{}\"}}",
-        json_str(reason),
-        json_str(readback_hex)
-    )
+    json_line(&SafeShutdown {
+        tag: Tag::SafeShutdown,
+        reason,
+        verified_safe,
+        readback_hex,
+    })
 }
 
 /// The distinct machine-readable alarm for a shutdown that could NOT verify
 /// the safe image. A supervising parent must treat this as "a commanded bit
 /// possibly still set"; it is paired with the non-zero exit code from
 /// [`safe_shutdown_verdict`].
+#[derive(Serialize)]
+struct Alarm<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    reason: &'static str,
+    shutdown_reason: &'a str,
+    readback_hex: &'a str,
+}
+
 fn alarm_line(reason: &str, readback_hex: &str) -> String {
-    format!(
-        "{{\"type\":\"alarm\",\"reason\":\"safe output NOT verified\",\
-         \"shutdown_reason\":\"{}\",\"readback_hex\":\"{}\"}}",
-        json_str(reason),
-        json_str(readback_hex)
-    )
+    json_line(&Alarm {
+        tag: Tag::Alarm,
+        reason: "safe output NOT verified",
+        shutdown_reason: reason,
+        readback_hex,
+    })
 }
 
 /// `{"type":"stopped","exit":N}` — an acyclic-only session ended.
+#[derive(Serialize)]
+struct StoppedExit {
+    #[serde(rename = "type")]
+    tag: Tag,
+    exit: i32,
+}
+
 fn stopped_exit_line(exit: i32) -> String {
-    format!("{{\"type\":\"stopped\",\"exit\":{exit}}}")
+    json_line(&StoppedExit {
+        tag: Tag::Stopped,
+        exit,
+    })
 }
 
 /// `{"type":"stopped","tx":..}` — a cyclic session ended, with frame counts.
+#[derive(Serialize)]
+struct StoppedStats {
+    #[serde(rename = "type")]
+    tag: Tag,
+    tx: u64,
+    rx: u64,
+    missed: u64,
+}
+
 fn stopped_stats_line(tx: u64, rx: u64, missed: u64) -> String {
-    format!("{{\"type\":\"stopped\",\"tx\":{tx},\"rx\":{rx},\"missed\":{missed}}}")
+    json_line(&StoppedStats {
+        tag: Tag::Stopped,
+        tx,
+        rx,
+        missed,
+    })
 }
 
 /// Emit an `{"type":"error",...}` line for a failed read and keep going.
@@ -3522,12 +3893,6 @@ mod tests {
         assert!(parse_serve_cmd(r#"{"cmd":"ping"}"#).is_err());
     }
 
-    /// Every string that goes into an emitted line has to survive being
-    /// hostile. Until now the five interpolations that skipped `json_str` were
-    /// safe only because of where their values came from: fixed labels, hex
-    /// from `hex_encode`, a `&'static str`. That is an invariant somebody has
-    /// to remember on the next field, and forgetting it emits a line the
-    /// consumer silently drops rather than reports.
     /// The wire format, pinned byte for byte.
     ///
     /// One assertion per line shape, 30 of them, and it is the whole
@@ -3788,6 +4153,46 @@ mod tests {
         );
     }
 
+    /// The one thing the port to `serde` did change, pinned so it is a
+    /// documented fact rather than a surprise.
+    ///
+    /// The hand-written escaper wrote every control character below 0x20
+    /// except `\n` as `\u00xx`. `serde_json` uses the short forms for four of
+    /// them. Both are valid JSON for the same string, so no parser can tell —
+    /// only a consumer comparing raw bytes or matching a regex against a line
+    /// could, which is why it is stated here instead of buried in a commit
+    /// message. Everything else escapes identically: quote, backslash, `\n`,
+    /// the remaining control characters, and anything non-ASCII.
+    #[test]
+    fn control_characters_use_the_short_escapes() {
+        let raw = "a\u{8}b\u{9}c\u{c}d\u{d}e";
+        assert_eq!(
+            error_msg_line(raw),
+            r#"{"type":"error","msg":"a\bb\tc\fd\re"}"#
+        );
+
+        // The four that changed form still decode to exactly what went in.
+        let line = error_msg_line(raw);
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["msg"].as_str(), Some(raw));
+
+        // The ones that did not change: quote, backslash, newline, and a
+        // control character that has no short form.
+        assert_eq!(
+            error_msg_line("q\"b\\x\u{a}c\u{1}"),
+            r#"{"type":"error","msg":"q\"b\\x\nc\u0001"}"#
+        );
+    }
+
+    /// Every string that goes into an emitted line has to survive being
+    /// hostile.
+    ///
+    /// This used to be the check on a hand-written escaper that each emit site
+    /// had to remember to call. It is kept now that `serde` escapes
+    /// structurally, because the property is what matters and not the
+    /// mechanism: a future field holding device text must still produce a line
+    /// the consumer can parse. A `#[serde(skip_serializing)]`, a raw-string
+    /// shortcut or a hand-built `String` field would break it again.
     #[test]
     fn every_emitted_string_survives_hostile_content() {
         let nasty = "he said \"stop\"\n\tand \\ left\u{1}";
