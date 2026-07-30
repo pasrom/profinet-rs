@@ -1204,7 +1204,8 @@ fn json_str(s: &str) -> String {
 /// Emit an `{"type":"error",...}` line for a failed read and keep going.
 fn emit_read_error(read: &str, err: &str) {
     emit(&format!(
-        "{{\"type\":\"error\",\"read\":\"{read}\",\"msg\":\"{}\"}}",
+        "{{\"type\":\"error\",\"read\":\"{}\",\"msg\":\"{}\"}}",
+        json_str(read),
         json_str(err)
     ));
 }
@@ -1560,8 +1561,9 @@ fn pnio_status_of(msg: &str) -> Option<String> {
 fn serve_emit_error(id: u64, msg: &str) {
     match pnio_status_of(msg) {
         Some(pnio) => emit(&format!(
-            "{{\"id\":{id},\"type\":\"read_error\",\"host_us\":{},\"pnio\":\"{pnio}\",\"msg\":\"{}\"}}",
+            "{{\"id\":{id},\"type\":\"read_error\",\"host_us\":{},\"pnio\":\"{}\",\"msg\":\"{}\"}}",
             host_unix_us(),
+            json_str(&pnio),
             json_str(msg)
         )),
         None => emit(&format!(
@@ -1881,8 +1883,9 @@ fn cmd_serve(
                     .unwrap_or_default();
                 emit(&format!(
                     "{{\"type\":\"output\",\"control_byte\":{effective},\"safe\":{},\
-                     \"readback_hex\":\"{readback}\"}}",
-                    effective == SAFE_OUTPUT_BYTE
+                     \"readback_hex\":\"{}\"}}",
+                    effective == SAFE_OUTPUT_BYTE,
+                    json_str(&readback)
                 ));
             }
 
@@ -2269,8 +2272,9 @@ fn apply_control_cmd(cmd: ControlCmd, state: &mut ControlState, allow_mask: u8) 
                 _ => "set_level",
             };
             emit(&format!(
-                "{{\"type\":\"refused\",\"cmd\":\"{name}\",\"mask\":{mask},\
-                 \"reason\":\"mask has bits outside --allow-mask (0x{allow_mask:02x})\"}}"
+                "{{\"type\":\"refused\",\"cmd\":\"{}\",\"mask\":{mask},\
+                 \"reason\":\"mask has bits outside --allow-mask (0x{allow_mask:02x})\"}}",
+                json_str(name)
             ));
             return false;
         }
@@ -2293,7 +2297,7 @@ fn apply_control_cmd(cmd: ControlCmd, state: &mut ControlState, allow_mask: u8) 
                 "{{\"type\":\"ack\",\"cmd\":\"pulse\",\"mask\":{mask},\"pulse_ticks\":{PULSE_TICKS}}}"
             )),
             Err(r) => emit(&format!(
-                "{{\"type\":\"refused\",\"cmd\":\"pulse\",\"mask\":{mask},\"reason\":\"{r}\"}}"
+                "{{\"type\":\"refused\",\"cmd\":\"pulse\",\"mask\":{mask},\"reason\":\"{}\"}}", json_str(r)
             )),
         },
         ControlCmd::Keepalive => emit("{\"type\":\"ack\",\"cmd\":\"keepalive\"}"),
@@ -2309,8 +2313,9 @@ fn apply_control_cmd(cmd: ControlCmd, state: &mut ControlState, allow_mask: u8) 
 fn alarm_line(reason: &str, readback_hex: &str) -> String {
     format!(
         "{{\"type\":\"alarm\",\"reason\":\"safe output NOT verified\",\
-         \"shutdown_reason\":\"{}\",\"readback_hex\":\"{readback_hex}\"}}",
-        json_str(reason)
+         \"shutdown_reason\":\"{}\",\"readback_hex\":\"{}\"}}",
+        json_str(reason),
+        json_str(readback_hex)
     )
 }
 
@@ -2394,8 +2399,9 @@ fn safe_shutdown(
     }
     emit(&format!(
         "{{\"type\":\"safe_shutdown\",\"reason\":\"{}\",\"verified_safe\":{verified},\
-         \"readback_hex\":\"{readback}\"}}",
-        json_str(reason)
+         \"readback_hex\":\"{}\"}}",
+        json_str(reason),
+        json_str(&readback)
     ));
     if !verified {
         emit(&alarm_line(reason, &readback));
@@ -3323,6 +3329,40 @@ mod tests {
             parse_serve_cmd(r#"{"cmd":"read","index":1,"slot":1,"subslot":1,"len":4}"#).is_err()
         );
         assert!(parse_serve_cmd(r#"{"cmd":"ping"}"#).is_err());
+    }
+
+    /// Every string that goes into an emitted line has to survive being
+    /// hostile. Until now the five interpolations that skipped `json_str` were
+    /// safe only because of where their values came from: fixed labels, hex
+    /// from `hex_encode`, a `&'static str`. That is an invariant somebody has
+    /// to remember on the next field, and forgetting it emits a line the
+    /// consumer silently drops rather than reports.
+    #[test]
+    fn every_emitted_string_survives_hostile_content() {
+        let nasty = "he said \"stop\"\n\tand \\ left\u{1}";
+        for (label, line) in [
+            ("alarm", alarm_line(nasty, nasty)),
+            (
+                "read_error",
+                format!(
+                    "{{\"type\":\"error\",\"read\":\"{}\",\"msg\":\"{}\"}}",
+                    json_str(nasty),
+                    json_str(nasty)
+                ),
+            ),
+        ] {
+            // The consumer parses these with serde_json, so valid JSON is the
+            // contract, not merely "looks about right".
+            let v: serde_json::Value = serde_json::from_str(&line)
+                .unwrap_or_else(|e| panic!("{label} is not valid JSON: {e}\n{line}"));
+            assert!(v.get("type").is_some(), "{label} lost its type field");
+        }
+
+        // And the escaping round-trips: what goes in comes back out.
+        let line = alarm_line(nasty, "00ff");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(v["shutdown_reason"].as_str(), Some(nasty));
+        assert_eq!(v["readback_hex"].as_str(), Some("00ff"));
     }
 
     #[test]
