@@ -36,6 +36,30 @@ jobs:
       # list is read.
       - run: cargo test --all
 
+  cargo-audit:
+    name: cargo-audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      # `--locked` so the tool that judges our dependencies is not itself built
+      # from a resolution nobody pinned.
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+
+  cargo-deny:
+    name: cargo-deny (licences, bans, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Everything except advisories, which cargo-audit above already reads from
+      # the same RustSec database. What this adds is the rest: a licence the
+      # GPL cannot absorb, a crate with no licence at all, a wildcard version
+      # requirement, and a dependency from somewhere other than crates.io.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses bans sources
+
   build:
     name: build ${{ matrix.name }}
     needs: check
