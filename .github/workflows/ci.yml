@@ -95,10 +95,59 @@ jobs:
           test -f "$src"
           ext=""
           case "${{ matrix.binary }}" in *.exe) ext=".exe" ;; esac
-          cp "$src" "profinet-${{ matrix.name }}-$(git rev-parse --short HEAD)$ext"
+          # A tag names itself; anything else carries the commit it came from,
+          # so a downloaded binary can always be traced back to a build.
+          case "$GITHUB_REF" in
+            refs/tags/*) version="${GITHUB_REF#refs/tags/}" ;;
+            *) version="$(git rev-parse --short HEAD)" ;;
+          esac
+          cp "$src" "profinet-${{ matrix.name }}-$version$ext"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: profinet-${{ matrix.name }}
           path: profinet-${{ matrix.name }}-*
           retention-days: 14
+
+  release:
+    name: release
+    # Only for a version tag. Artefacts expire after 14 days, which is fine for
+    # "did it build" and useless for "give me the binary that runs on that
+    # machine": a release is the copy that stays.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # No checkout: the release is built from the artefacts and the API, and
+      # nothing here reads the working tree.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+      - name: Every binary is there
+        run: |
+          # `build` uses `fail-fast: false`, so a red target still lets the
+          # others through. Count them here rather than trust that the job ran:
+          # a release carrying two of three binaries is worse than none, because
+          # it looks complete.
+          found=$(find artifacts -type f | wc -l)
+          test "$found" -eq 3 || {
+            echo "expected 3 binaries, found $found:"
+            find artifacts -type f
+            exit 1
+          }
+
+      # Pinned to the commit behind v3.0.2, not to the tag: a tag is a movable
+      # pointer in someone else's repository, and `@v3` or `@v3.0.2` runs
+      # whatever it points at on the day the workflow runs. This is the one step
+      # holding a token that may write to the repository, so it runs code we
+      # decided on, not code we will be given.
+      - name: Publish the release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: artifacts/**/*
+          # Belt and braces beside the count above: an empty glob would
+          # otherwise publish a release with nothing attached.
+          fail_on_unmatched_files: true
+          generate_release_notes: true
