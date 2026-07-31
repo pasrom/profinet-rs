@@ -1,0 +1,54 @@
+; Import definitions for Npcap's wpcap.dll, so a Windows binary can be linked
+; without the Npcap SDK.
+;
+; A .def is a list of function names, nothing of Npcap's own. `dlltool` turns it
+; into an import library that resolves these symbols against whatever wpcap.dll
+; the target machine has, which is what an SDK's import library would do too.
+; The SDK is a download whose licence restricts redistribution; this file is
+; ours and the build needs nothing else.
+;
+; The list is exactly the pcap symbols this crate references. A new pcap call
+; that is missing here fails at link time with an undefined symbol, which is the
+; error you want. Regenerate after adding one:
+;
+;   cargo build --target x86_64-pc-windows-gnu 2>&1 |
+;     grep -o 'undefined reference to `[a-z_]*' | sed 's/.*`//' | sort -u
+;
+LIBRARY wpcap.dll
+EXPORTS
+pcap_activate
+pcap_breakloop
+pcap_close
+pcap_compile
+pcap_create
+pcap_datalink_name_to_val
+pcap_datalink_val_to_description
+pcap_datalink_val_to_name
+pcap_dump
+pcap_dump_close
+pcap_dump_flush
+pcap_findalldevs
+pcap_freealldevs
+pcap_freecode
+pcap_geterr
+pcap_major_version
+pcap_minor_version
+pcap_next_ex
+pcap_offline_filter
+pcap_open_dead
+pcap_open_dead_with_tstamp_precision
+pcap_sendpacket
+pcap_sendqueue_alloc
+pcap_sendqueue_destroy
+pcap_sendqueue_queue
+pcap_sendqueue_transmit
+pcap_set_buffer_size
+pcap_set_immediate_mode
+pcap_set_promisc
+pcap_set_snaplen
+pcap_set_timeout
+pcap_set_tstamp_precision
+pcap_set_tstamp_type
+pcap_setfilter
+pcap_setnonblock
+pcap_t

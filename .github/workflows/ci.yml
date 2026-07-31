@@ -9,6 +9,7 @@ env:
 
 jobs:
   check:
+    name: fmt + clippy + test (linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -21,3 +22,83 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all
+
+  test-macos:
+    name: test (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      # libpcap ships with the OS here, so only the tests differ from `check`.
+      # They run because macOS is the platform this is developed on, and a
+      # Linux-only gate would let a macOS-only break through: the two differ in
+      # interface naming, in what a raw socket may do, and in how the interface
+      # list is read.
+      - run: cargo test --all
+
+  build:
+    name: build ${{ matrix.name }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One broken target must not hide the state of the other two.
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: profinet
+          # arm64 only: no Intel Mac is in use here, and an x86_64 slice nobody
+          # runs is a build to keep working and an artefact to pick wrongly.
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            binary: profinet
+          # Cross-built from Linux rather than on a Windows runner: the pcap
+          # crate needs an import library for wpcap.dll, and there are two ways
+          # to get one — the Npcap SDK, a download whose licence restricts
+          # redistribution, or `dlltool` over a list of symbol names. The second
+          # needs nothing but mingw, so this build depends on no third-party
+          # download. See tools/wpcap.def.
+          - name: windows-x86_64
+            os: ubuntu-latest
+            target: x86_64-pc-windows-gnu
+            binary: profinet.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      - run: rustup target add ${{ matrix.target }}
+
+      - name: Install libpcap (linux target)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Install mingw and build the wpcap import library
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+          mkdir -p "$RUNNER_TEMP/wpcap"
+          x86_64-w64-mingw32-dlltool -d tools/wpcap.def \
+            -l "$RUNNER_TEMP/wpcap/libwpcap.a"
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+          RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-gnu' && format('-L {0}/wpcap', runner.temp) || '' }}
+
+      - name: Name the binary after its target
+        run: |
+          src="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          test -f "$src"
+          ext=""
+          case "${{ matrix.binary }}" in *.exe) ext=".exe" ;; esac
+          cp "$src" "profinet-${{ matrix.name }}-$(git rev-parse --short HEAD)$ext"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: profinet-${{ matrix.name }}
+          path: profinet-${{ matrix.name }}-*
+          retention-days: 14
