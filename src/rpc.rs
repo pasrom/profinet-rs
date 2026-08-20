@@ -16,6 +16,11 @@ pub const WRITE: u16 = 0x03;
 pub const CONTROL: u16 = 0x04;
 pub const IMPLICIT_READ: u16 = 0x05;
 
+/// DCE/RPC connectionless flags1 bits, named rather than left as literals.
+pub const RPC_FLAGS1_LASTFRAG: u8 = 0x02;
+pub const RPC_FLAGS1_NOFACK: u8 = 0x08;
+pub const RPC_FLAGS1_IDEMPOTENT: u8 = 0x20;
+
 /// PNRPCHeader.IFACE_UUID_DEVICE: PNIO-Device interface UUID in big-endian
 /// byte order (matching drep=0x00 in `_create_rpc`).
 pub const IFACE_UUID_DEVICE: [u8; 16] = [
@@ -66,7 +71,7 @@ pub fn rpc_request(
     let mut out = Vec::with_capacity(80 + body.len());
     out.push(0x04); // version
     out.push(REQUEST); // packet_type
-    out.push(0x20); // flags1
+    out.push(RPC_FLAGS1_IDEMPOTENT);
     out.push(0x00); // flags2
     out.extend_from_slice(&[0x00, 0x00, 0x00]); // drep (BE, ASCII, IEEE float)
     out.push(0x00); // serial_high
