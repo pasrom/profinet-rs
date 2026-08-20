@@ -4,9 +4,10 @@
 
 use profinet_rs::blocks::iod_read_request;
 use profinet_rs::rpc::{
-    nrd, object_uuid, read_record_request, rpc_request, write_record_request, IFACE_UUID_DEVICE,
-    READ,
+    nrd, object_uuid, read_record_implicit_request, read_record_request, rpc_request,
+    write_record_request, IFACE_UUID_DEVICE, IMPLICIT_READ, READ,
 };
+use profinet_rs::transport::parse_rpc_header;
 
 fn golden() -> serde_json::Value {
     let raw = std::fs::read_to_string(concat!(
@@ -174,4 +175,63 @@ fn iod_block_type_constants() {
 fn block_header_builder_layout() {
     let data = profinet_rs::blocks::block_header(0x0008, 0x003C, 0x01, 0x00);
     assert_eq!(data, [0x00, 0x08, 0x00, 0x3C, 0x01, 0x00]);
+}
+
+#[test]
+fn implicit_read_is_the_same_request_with_no_ar() {
+    // Read Implicit addresses the device by IP alone: same IODReadReq, but the
+    // AR UUID is zero and it goes out with opnum 0x05 instead of READ. A
+    // device stack that rejects the Device Access AR still answers this.
+    let explicit = read_record_request(
+        &obj_uuid(),
+        &IFACE_UUID_DEVICE,
+        &activity_uuid(),
+        &ar_uuid(),
+        1,
+        0,
+        1,
+        1,
+        0xAFF0,
+        4096,
+    );
+    let implicit = read_record_implicit_request(
+        &obj_uuid(),
+        &IFACE_UUID_DEVICE,
+        &activity_uuid(),
+        1,
+        0,
+        1,
+        1,
+        0xAFF0,
+        4096,
+    );
+    assert_eq!(explicit.len(), implicit.len());
+
+    let header = parse_rpc_header(&implicit).expect("RPC header");
+    assert_eq!(header.operation_number, IMPLICIT_READ);
+
+    // Rebuilding the explicit form with a zeroed AR UUID must reproduce the
+    // implicit request everywhere except the opnum field.
+    let zero_ar = read_record_request(
+        &obj_uuid(),
+        &IFACE_UUID_DEVICE,
+        &activity_uuid(),
+        &[0u8; 16],
+        1,
+        0,
+        1,
+        1,
+        0xAFF0,
+        4096,
+    );
+    let differing: Vec<usize> = (0..zero_ar.len())
+        .filter(|&i| zero_ar[i] != implicit[i])
+        .collect();
+    assert_eq!(
+        differing,
+        vec![69],
+        "only the opnum should differ, got {differing:?}"
+    );
+    assert_eq!(zero_ar[69], READ as u8);
+    assert_eq!(implicit[69], IMPLICIT_READ as u8);
 }

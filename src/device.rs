@@ -359,16 +359,7 @@ impl ProfinetDevice {
         if self.rpc.is_some() {
             return Ok(());
         }
-        let mut conn = RpcConn::new_raw(
-            &self.interface,
-            self.src_mac,
-            self.src_ip,
-            self.info.mac,
-            self.info.ip,
-            self.info.device_id,
-            self.info.vendor_id,
-            self.timeout,
-        )?;
+        let mut conn = self.new_transport()?;
         conn.connect_device_access(&self.src_mac, CM_STATION_NAME)
             .map_err(|e| format!("Failed to connect to {}: {e}", self.info.name))?;
         self.rpc = Some(conn);
@@ -388,6 +379,20 @@ impl ProfinetDevice {
     /// best-effort Release, which the reference's raw socket close skips).
     pub fn close(&mut self) {
         self.disconnect();
+    }
+
+    /// Open a transport to the device without establishing an AR.
+    fn new_transport(&self) -> Result<RpcConn, String> {
+        RpcConn::new_raw(
+            &self.interface,
+            self.src_mac,
+            self.src_ip,
+            self.info.mac,
+            self.info.ip,
+            self.info.device_id,
+            self.info.vendor_id,
+            self.timeout,
+        )
     }
 
     fn ensure_connected(&mut self) -> Result<&mut RpcConn, String> {
@@ -474,8 +479,49 @@ impl ProfinetDevice {
         index: u16,
         length: u32,
     ) -> Result<Vec<u8>, String> {
-        self.ensure_connected()?
+        // Some device stacks (p-net among them) do not implement the Device
+        // Access AR this sends, even though it is spec-correct. The AR-less
+        // Read Implicit service answers on those, so a failed connect falls
+        // back to it rather than failing the read.
+        //
+        // Deliberately not cached: a connect can also fail because a single
+        // packet was lost, and latching on that would send every later read
+        // AR-less for the lifetime of this handle — while writes kept
+        // re-establishing the AR, leaving reads and writes on different paths.
+        if self.ensure_connected().is_err() {
+            return self.read_record_implicit_len(slot, subslot, index, length);
+        }
+        self.rpc
+            .as_mut()
+            .expect("connected above")
             .read_raw(index, slot, subslot, length)
+    }
+
+    /// Read a record via the AR-less Read Implicit service
+    /// (`read_implicit`), addressing the device by IP only.
+    pub fn read_record_implicit(
+        &mut self,
+        slot: u16,
+        subslot: u16,
+        index: u16,
+    ) -> Result<Vec<u8>, String> {
+        self.read_record_implicit_len(slot, subslot, index, READ_LENGTH)
+    }
+
+    /// Read Implicit with an explicit requested length.
+    pub fn read_record_implicit_len(
+        &mut self,
+        slot: u16,
+        subslot: u16,
+        index: u16,
+        length: u32,
+    ) -> Result<Vec<u8>, String> {
+        if let Some(rpc) = self.rpc.as_mut() {
+            return rpc.read_raw_implicit(index, slot, subslot, length);
+        }
+        // No AR to reuse and none needed: an unconnected transport is enough.
+        self.new_transport()?
+            .read_raw_implicit(index, slot, subslot, length)
     }
 
     /// Write a record to the device (`write`).
@@ -513,7 +559,8 @@ impl ProfinetDevice {
 
     /// Read I&M0 from an explicit slot/subslot.
     pub fn read_im0_at(&mut self, slot: u16, subslot: u16) -> Result<im::InM0, String> {
-        self.ensure_connected()?.read_im0(slot, subslot)
+        let payload = self.read_record_len(slot, subslot, im::InM0::IDX, READ_LENGTH)?;
+        im::parse_im0(&payload)
     }
 
     /// Read I&M1 tag function/location (`read_im1`, slot 0 / subslot 1).
@@ -523,7 +570,8 @@ impl ProfinetDevice {
 
     /// Read I&M1 from an explicit slot/subslot.
     pub fn read_im1_at(&mut self, slot: u16, subslot: u16) -> Result<im::InM1, String> {
-        self.ensure_connected()?.read_im1(slot, subslot)
+        let payload = self.read_record_len(slot, subslot, im::InM1::IDX, READ_LENGTH)?;
+        im::parse_im1(&payload)
     }
 
     /// Read I&M2 installation date (`read_im2`, slot 0 / subslot 1).
@@ -533,7 +581,8 @@ impl ProfinetDevice {
 
     /// Read I&M2 from an explicit slot/subslot.
     pub fn read_im2_at(&mut self, slot: u16, subslot: u16) -> Result<im::InM2, String> {
-        self.ensure_connected()?.read_im2(slot, subslot)
+        let payload = self.read_record_len(slot, subslot, im::InM2::IDX, READ_LENGTH)?;
+        im::parse_im2(&payload)
     }
 
     /// Read I&M3 descriptor (`read_im3`, slot 0 / subslot 1).
@@ -543,18 +592,20 @@ impl ProfinetDevice {
 
     /// Read I&M3 from an explicit slot/subslot.
     pub fn read_im3_at(&mut self, slot: u16, subslot: u16) -> Result<im::InM3, String> {
-        self.ensure_connected()?.read_im3(slot, subslot)
+        let payload = self.read_record_len(slot, subslot, im::InM3::IDX, READ_LENGTH)?;
+        im::parse_im3(&payload)
     }
 
     /// Read all available I&M records (`read_all_im`): probe I&M0..3 at the
     /// given slot/subslot, keeping only the ones the device supports.
     pub fn read_all_im(&mut self, slot: u16, subslot: u16) -> Result<AllIm, String> {
-        let rpc = self.ensure_connected()?;
+        // Through the same read path as everything else, so a device that
+        // refuses the AR still yields whatever I&M it exposes.
         Ok(AllIm {
-            im0: rpc.read_im0(slot, subslot).ok(),
-            im1: rpc.read_im1(slot, subslot).ok(),
-            im2: rpc.read_im2(slot, subslot).ok(),
-            im3: rpc.read_im3(slot, subslot).ok(),
+            im0: self.read_im0_at(slot, subslot).ok(),
+            im1: self.read_im1_at(slot, subslot).ok(),
+            im2: self.read_im2_at(slot, subslot).ok(),
+            im3: self.read_im3_at(slot, subslot).ok(),
         })
     }
 

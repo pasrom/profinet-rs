@@ -992,8 +992,38 @@ impl RpcConn {
             idx,
             length,
         );
-        let resp = self.send_receive(&req)?;
+        self.send_read(&req)
+    }
+
+    /// Send a built read request and decode the record from the response.
+    fn send_read(&mut self, req: &[u8]) -> Result<Vec<u8>, String> {
+        let resp = self.send_receive(req)?;
         parse_read_response(&resp.payload, resp.is_little_endian)
+    }
+
+    /// Read a data record without an established AR (`read_implicit`).
+    /// Needs no CONNECT, so it works on devices that reject the Device Access
+    /// AR; read-only.
+    pub fn read_raw_implicit(
+        &mut self,
+        idx: u16,
+        slot: u16,
+        subslot: u16,
+        length: u32,
+    ) -> Result<Vec<u8>, String> {
+        let seq = self.next_seq();
+        let req = rpc::read_record_implicit_request(
+            &self.object_uuid,
+            &rpc::IFACE_UUID_DEVICE,
+            &self.activity_uuid,
+            seq,
+            0,
+            slot,
+            subslot,
+            idx,
+            length,
+        );
+        self.send_read(&req)
     }
 
     /// Read I&M0 identification data (`read_im0`; reference defaults
