@@ -11,7 +11,8 @@ use profinet_rs::gsdml::IoSlot;
 use profinet_rs::rt::{
     build_ethernet_frame, build_iocr_configs, parse_ethernet_frame, CyclicDataBuilder,
     IoDataObject, IocrConfig, RtFrame, DATA_STATUS_PROVIDER_RUN, DATA_STATUS_STATE,
-    DATA_STATUS_STATION_OK, DATA_STATUS_VALID, IOCR_TYPE_INPUT, IOCR_TYPE_OUTPUT, IOXS_GOOD,
+    DATA_STATUS_STATION_OK, DATA_STATUS_VALID, IOCR_TYPE_INPUT, IOCR_TYPE_OUTPUT, IOXS_BAD,
+    IOXS_GOOD,
 };
 
 const SRC_MAC: [u8; 6] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55];
@@ -950,4 +951,55 @@ fn an_input_only_device_still_gets_its_consumer_status() {
     let frame = builder.build();
     assert_eq!(frame[0], IOXS_GOOD, "slot 1 consumer status");
     assert_eq!(frame[1], IOXS_GOOD, "slot 2 consumer status");
+}
+
+// ---------------------------------------------------------------------------
+// Watchdog: consumer status vs. monitoring-only operation
+// ---------------------------------------------------------------------------
+
+/// Output IOCR with a real IOCS byte, so set_all_iocs has somewhere to write:
+/// slot 1 is input-only (its IOCS lives in the output frame), slot 2 output.
+fn output_iocr_with_iocs() -> IocrConfig {
+    let slots = [fake_slot(1, 1, 8, 0), fake_slot(2, 1, 0, 4)];
+    let (_input, output) = build_iocr_configs(&slots, 0xC001, 0xC000, 32, 32, 3);
+    output
+}
+
+/// The IOCS byte of the input-only slot in the next output frame.
+fn iocs_byte(ctrl: &CyclicController) -> u8 {
+    let frame = parse_ethernet_frame(&ctrl.next_output_frame(None)).expect("RT frame");
+    frame.payload[5]
+}
+
+#[test]
+fn a_watchdog_timeout_marks_the_consumer_status_bad() {
+    let ctrl = make_controller_with(make_input_iocr(1, 1), output_iocr_with_iocs(), 3);
+    ctrl.transition(CyclicState::Running);
+    // Input arrived once, so the consumer status starts out GOOD.
+    feed(&ctrl, 1, [0x01, 0x02, 0x03, 0x04], 0x80);
+    assert_eq!(iocs_byte(&ctrl), IOXS_GOOD);
+    ctrl.handle_watchdog_timeout();
+    assert_eq!(
+        iocs_byte(&ctrl),
+        IOXS_BAD,
+        "a watchdog that may fault must report the input as not consumed"
+    );
+}
+
+#[test]
+fn a_monitoring_only_watchdog_keeps_the_consumer_status_good() {
+    // max_consecutive_timeouts = 0 means "never enter FAULT": the watchdog
+    // only counts. Reporting IOCS BAD then asks the device to drop an output
+    // relationship that is deliberately not being faulted.
+    let ctrl = make_controller_with(make_input_iocr(1, 1), output_iocr_with_iocs(), 0);
+    ctrl.transition(CyclicState::Running);
+    feed(&ctrl, 1, [0x01, 0x02, 0x03, 0x04], 0x80);
+    assert_eq!(iocs_byte(&ctrl), IOXS_GOOD);
+    ctrl.handle_watchdog_timeout();
+    assert_eq!(iocs_byte(&ctrl), IOXS_GOOD);
+    assert_eq!(
+        ctrl.state(),
+        CyclicState::Running,
+        "a monitoring-only watchdog must not fault"
+    );
 }

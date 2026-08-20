@@ -312,7 +312,13 @@ impl Shared {
             *counter = ((*counter as u32 + self.tx_counter_step) & 0xFFFF) as u16;
             *counter
         };
-        let payload = plock(&self.output_builder).build();
+        let payload = {
+            // Commit the double buffer and read it under one lock: this *is*
+            // the TX cycle, so no caller can forget the swap.
+            let mut builder = plock(&self.output_builder);
+            builder.swap();
+            builder.build()
+        };
         let data_status = data_status.unwrap_or(
             DATA_STATUS_VALID
                 | DATA_STATUS_PROVIDER_RUN
@@ -506,8 +512,13 @@ impl Shared {
             stats.consecutive_timeouts
         };
 
-        // Set IOCS to BAD - we haven't received valid input
-        plock(&self.output_builder).set_all_iocs(IOXS_BAD);
+        // IOCS goes BAD only when watchdog faulting is enabled. With
+        // max_consecutive_timeouts = 0 the watchdog is monitoring-only, so
+        // keep the consumer status GOOD: otherwise a transient RX gap tells
+        // the device to drop an output relationship that is still fine.
+        if self.max_consecutive_timeouts > 0 {
+            plock(&self.output_builder).set_all_iocs(IOXS_BAD);
+        }
 
         {
             let callbacks = plock(&self.callbacks);
@@ -580,16 +591,15 @@ fn tx_loop(shared: Arc<Shared>, mut sock: RawSocket) -> RawSocket {
         let now = Instant::now();
 
         if now >= next_send {
-            // In FAULT state, don't send output frames
-            if *plock(&shared.state) != CyclicState::Fault {
-                // Swap double buffer and send
-                plock(&shared.output_builder).swap();
-                let frame = shared.next_output_frame(None);
-                if let Err(e) = sock.send(&frame) {
-                    shared.emit_error(&format!("TX error: {e}"));
-                }
-                plock(&shared.stats).frames_sent += 1;
+            // Transmit every cycle, FAULT included. Stopping TX expires the
+            // device's DHT, which aborts the whole AR — so input frames can
+            // never resume and FAULT becomes unrecoverable. IOCS is already
+            // BAD in FAULT, so the device is told the data is not consumed.
+            let frame = shared.next_output_frame(None);
+            if let Err(e) = sock.send(&frame) {
+                shared.emit_error(&format!("TX error: {e}"));
             }
+            plock(&shared.stats).frames_sent += 1;
 
             if first_frame {
                 first_frame = false;
