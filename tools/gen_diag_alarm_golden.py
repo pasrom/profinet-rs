@@ -26,7 +26,10 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _golden_common import dump, nrd, use_reference  # noqa: E402
+
+use_reference()
 
 from profinet import indices  # noqa: E402
 from profinet.alarms import parse_alarm_notification  # noqa: E402
@@ -280,15 +283,16 @@ golden["get_pe_mode_name"] = {
 # --- AlarmNotification PDUs ---------------------------------------------------
 def alarm_pdu(block_type, alarm_type, api, slot, subslot, module_ident,
               submodule_ident, alarm_specifier, payload=b""):
-    # The reference consumes a 22-byte body (its 20-byte struct plus 2
-    # skipped bytes) before the payload items, so pad accordingly.
+    # The AlarmNotification body is 20 bytes (IEC 61158-6-10) and the payload
+    # items follow it directly. Earlier vectors carried two pad bytes here to
+    # match a reference that consumed 22 for its 20-byte struct; that was the
+    # bug, not the layout.
     body = (
         be16(alarm_type)
         + be32(api)
         + be16(slot, subslot)
         + be32(module_ident, submodule_ident)
         + be16(alarm_specifier)
-        + b"\x00\x00"
         + payload
     )
     hdr = bytes(PNBlockHeader(block_type, len(body) + 2, 0x01, 0x00))
@@ -626,6 +630,5 @@ golden["alarm_cr_res"] = {
     "local_alarm_reference": 0x002A,
 }
 
-with open(OUT, "w") as f:
-    json.dump(golden, f, indent=1, sort_keys=True)
-print(f"wrote {os.path.abspath(OUT)} ({len(golden)} vectors)")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+dump(OUT, golden)

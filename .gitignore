@@ -1,1 +1,5 @@
 /target
+
+# Python bytecode from the golden generators
+__pycache__/
+*.pyc

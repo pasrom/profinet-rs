@@ -15,7 +15,10 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _golden_common import dump, nrd, use_reference  # noqa: E402
+
+use_reference()
 
 from profinet.blocks import SlotInfo  # noqa: E402
 from profinet.gsdml import load_gsdml  # noqa: E402
@@ -111,9 +114,6 @@ golden = {
     ],
 }
 
-with open(OUT, "w") as f:
-    json.dump(golden, f, indent=2)
-    f.write("\n")
-
-print(f"wrote {os.path.normpath(OUT)}")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+dump(OUT, golden)
 print(json.dumps(golden, indent=2))

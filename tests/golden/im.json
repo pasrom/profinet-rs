@@ -1,4 +1,8 @@
 {
+  "_meta": {
+    "reference": "f0rw4rd/profinet-py",
+    "revision": "a629003"
+  },
   "im0_response": {
     "block_length": 56,
     "block_type": 32,

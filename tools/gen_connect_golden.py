@@ -39,11 +39,13 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _golden_common import dump, nrd, use_reference  # noqa: E402
+
+use_reference()
 
 from profinet.blocks import SlotInfo  # noqa: E402
 from profinet.gsdml import load_gsdml  # noqa: E402
-from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
 from profinet.protocol import (  # noqa: E402
     PNARBlockRequest,
     PNBlockHeader,
@@ -135,13 +137,12 @@ expected_submodule = conn._build_expected_submodule_block(setup)
 # concatenated without inter-block padding.
 body = ar_iocr_controller + input_iocr + output_iocr + alarm_cr + expected_submodule
 
-_args_max = max(NDR_ARGS_MAXIMUM, len(body))
-nrd = bytes(PNNRDData(_args_max, len(body), _args_max, 0, len(body), payload=body))
+nrd_bytes = nrd(body)
 rpc = bytes(
     PNRPCHeader(
         0x04, PNRPCHeader.REQUEST, 0x20, 0x00, bytes([0, 0, 0]), 0x00,
         OBJ, PNRPCHeader.IFACE_UUID_DEVICE, ACT, 0, 1, SEQ, PNRPCHeader.CONNECT,
-        0xFFFF, 0xFFFF, len(nrd), 0, 0, 0, payload=nrd,
+        0xFFFF, 0xFFFF, len(nrd_bytes), 0, 0, 0, payload=nrd_bytes,
     )
 )
 
@@ -195,11 +196,8 @@ golden = {
     },
 }
 
-with open(OUT, "w") as f:
-    json.dump(golden, f, indent=2)
-    f.write("\n")
-
-print(f"wrote {os.path.normpath(OUT)}")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+dump(OUT, golden)
 for k, v in golden.items():
     if isinstance(v, dict) and "hex" in v:
         print(f"  {k:28s} {len(v['hex']) // 2:4d}B {v['hex']}")

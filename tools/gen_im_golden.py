@@ -25,10 +25,12 @@ import struct
 import sys
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _golden_common import dump, nrd, use_reference  # noqa: E402
+
+use_reference()
 
 from profinet import blocks, indices  # noqa: E402
-from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
 from profinet.protocol import (  # noqa: E402
     PNBlockHeader,
     PNInM0,
@@ -52,11 +54,6 @@ golden = {}
 
 
 # --- READ request frames (rpc.py read(): IOD + NRD + RPC, seq 0) -------------
-def _nrd(payload: bytes) -> bytes:
-    args_max = max(NDR_ARGS_MAXIMUM, len(payload))
-    return bytes(
-        PNNRDData(args_max, len(payload), args_max, 0, len(payload), payload=payload)
-    )
 
 
 def _rpc_read(nrd: bytes) -> bytes:
@@ -75,7 +72,7 @@ def _read_request(slot: int, subslot: int, idx: int, length: int = 4096) -> byte
         bytes(block), 0, AR, 0, slot, subslot, 0, idx, length,
         bytes(16), bytes(8), payload=b"",
     )
-    return _rpc_read(_nrd(bytes(iod)))
+    return _rpc_read(nrd(bytes(iod)))
 
 
 for name, slot, subslot, idx in [
@@ -378,8 +375,5 @@ golden["inm0_filter_response"] = {
 }
 
 
-with open(OUT, "w") as f:
-    json.dump(golden, f, indent=2, sort_keys=True)
-    f.write("\n")
-
-print(f"wrote {os.path.normpath(OUT)} ({len(golden)} entries)")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+dump(OUT, golden)
