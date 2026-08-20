@@ -143,6 +143,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # The attestation is signed by GitHub on this workflow's behalf: the OIDC
+      # token proves which workflow ran, `attestations` lets it be recorded.
+      id-token: write
+      attestations: write
     steps:
       # No checkout: the release is built from the artefacts and the API, and
       # nothing here reads the working tree.
@@ -189,6 +193,18 @@ jobs:
             esac
           done
           find artifacts -type f
+
+      # Signed provenance for the exact bytes that are about to be published:
+      # which workflow, which commit, which runner built them. A consumer that
+      # downloads a binary can check it with
+      #   gh attestation verify <file> --repo pasrom/profinet-rs
+      # and get an answer that does not depend on trusting whoever handed them
+      # the file. This runs after the rename so the recorded name is the name
+      # the release actually carries, and before the upload so nothing is
+      # published unattested.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: artifacts/**/*
 
       # Pinned to the commit behind v3.0.2, not to the tag: a tag is a movable
       # pointer in someone else's repository, and `@v3` or `@v3.0.2` runs
