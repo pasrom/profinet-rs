@@ -171,6 +171,10 @@ enum Command {
         /// record size).
         #[arg(long, default_value_t = READ_LENGTH)]
         length: u32,
+        /// Use the AR-less Read Implicit service instead of connecting a
+        /// Device Access AR (for stacks that reject the AR).
+        #[arg(long)]
+        implicit: bool,
     },
 
     /// Write data record.
@@ -679,13 +683,13 @@ fn resolve_device(iface: &str, target: &str, timeout: Duration) -> Result<dcp::D
     match_device(devices, target).ok_or_else(|| format!("Device {target:?} not found"))
 }
 
-/// Resolve a station by name via DCP and open a Device-Access AR for acyclic
-/// read/write, the equivalent of cli.py's `get_station_info` + `RPCCon.connect`.
-fn rpc_connect(iface: &str, target: &str, timeout: Duration) -> Result<RpcConn, String> {
+/// Transport to the device without establishing an AR: enough for the AR-less
+/// Read Implicit service, which addresses the device by IP only.
+fn rpc_transport(iface: &str, target: &str, timeout: Duration) -> Result<RpcConn, String> {
     let cm_mac = pcap::get_mac(iface)?;
     let cm_ip = pcap::get_ipv4(iface)?;
     let dev = resolve_device(iface, target, timeout)?;
-    let mut conn = RpcConn::new_raw(
+    RpcConn::new_raw(
         iface,
         cm_mac,
         cm_ip,
@@ -694,7 +698,14 @@ fn rpc_connect(iface: &str, target: &str, timeout: Duration) -> Result<RpcConn, 
         dev.device_id,
         dev.vendor_id,
         RPC_TIMEOUT,
-    )?;
+    )
+}
+
+/// Resolve a station by name via DCP and open a Device-Access AR for acyclic
+/// read/write, the equivalent of cli.py's `get_station_info` + `RPCCon.connect`.
+fn rpc_connect(iface: &str, target: &str, timeout: Duration) -> Result<RpcConn, String> {
+    let cm_mac = pcap::get_mac(iface)?;
+    let mut conn = rpc_transport(iface, target, timeout)?;
     conn.connect_device_access(&cm_mac, CM_STATION_NAME)
         .map_err(|e| format!("Failed to connect to {target}: {e}"))?;
     Ok(conn)
@@ -708,10 +719,19 @@ fn cmd_read(
     subslot: u16,
     index: &str,
     length: u32,
+    implicit: bool,
     timeout: Duration,
 ) -> Result<i32, String> {
-    println!("Connecting to {target}...");
     let idx = parse_index(index)?;
+    if implicit {
+        println!("Reading {target} without an AR (Read Implicit)...");
+        let mut conn = rpc_transport(iface, target, timeout)?;
+        let data = conn.read_raw_implicit(idx, slot, subslot, length)?;
+        println!("Read {} bytes:", data.len());
+        println!("{}", hex_encode(&data));
+        return Ok(0);
+    }
+    println!("Connecting to {target}...");
     let mut conn = rpc_connect(iface, target, timeout)?;
     let data = conn.read_raw(idx, slot, subslot, length)?;
     conn.release();
@@ -3003,7 +3023,10 @@ fn run(cli: &Cli) -> Result<i32, String> {
             subslot,
             index,
             length,
-        } => cmd_read(iface, target, *slot, *subslot, index, *length, timeout),
+            implicit,
+        } => cmd_read(
+            iface, target, *slot, *subslot, index, *length, *implicit, timeout,
+        ),
         Command::Write {
             target,
             api: _,

@@ -14,6 +14,7 @@ pub const RELEASE: u16 = 0x01;
 pub const READ: u16 = 0x02;
 pub const WRITE: u16 = 0x03;
 pub const CONTROL: u16 = 0x04;
+pub const IMPLICIT_READ: u16 = 0x05;
 
 /// PNRPCHeader.IFACE_UUID_DEVICE: PNIO-Device interface UUID in big-endian
 /// byte order (matching drep=0x00 in `_create_rpc`).
@@ -89,6 +90,31 @@ pub fn rpc_request(
 // The argument list mirrors the wire fields one-to-one, so the count is
 // inherent to the record layout rather than an API-design smell.
 #[allow(clippy::too_many_arguments)]
+/// IODReadReq wrapped in NRD and framed by the RPC request header. An explicit
+/// and an implicit read differ only in the AR UUID and the opnum, so both
+/// public builders come through here.
+fn read_request(
+    object_uuid: &[u8; 16],
+    iface_uuid: &[u8; 16],
+    activity_uuid: &[u8; 16],
+    ar_uuid: &[u8; 16],
+    opnum: u16,
+    seq: u32,
+    api: u32,
+    slot: u16,
+    subslot: u16,
+    index: u16,
+    length: u32,
+) -> Vec<u8> {
+    let body = nrd(&crate::blocks::iod_read_request(
+        ar_uuid, api, slot, subslot, index, length,
+    ));
+    rpc_request(object_uuid, iface_uuid, activity_uuid, seq, opnum, &body)
+}
+
+// The argument list mirrors the wire fields one-to-one, so the count is
+// inherent to the record layout rather than an API-design smell.
+#[allow(clippy::too_many_arguments)]
 /// Full READ request frame: IODReadReq record wrapped in NRD, framed by the
 /// RPC request header (as `RPCCon.read` composes it).
 pub fn read_record_request(
@@ -103,10 +129,53 @@ pub fn read_record_request(
     index: u16,
     length: u32,
 ) -> Vec<u8> {
-    let body = nrd(&crate::blocks::iod_read_request(
-        ar_uuid, api, slot, subslot, index, length,
-    ));
-    rpc_request(object_uuid, iface_uuid, activity_uuid, seq, READ, &body)
+    read_request(
+        object_uuid,
+        iface_uuid,
+        activity_uuid,
+        ar_uuid,
+        READ,
+        seq,
+        api,
+        slot,
+        subslot,
+        index,
+        length,
+    )
+}
+
+// The argument list mirrors the wire fields one-to-one, so the count is
+// inherent to the record layout rather than an API-design smell.
+#[allow(clippy::too_many_arguments)]
+/// Full Read Implicit request frame: an IODReadReq carrying an all-zero AR
+/// UUID, sent with the IMPLICIT_READ opnum (as `RPCCon.read_implicit`
+/// composes it). The service addresses the device by IP alone, so it answers
+/// on stacks that reject the Device Access AR. Read-only — a write always
+/// needs an established AR.
+pub fn read_record_implicit_request(
+    object_uuid: &[u8; 16],
+    iface_uuid: &[u8; 16],
+    activity_uuid: &[u8; 16],
+    seq: u32,
+    api: u32,
+    slot: u16,
+    subslot: u16,
+    index: u16,
+    length: u32,
+) -> Vec<u8> {
+    read_request(
+        object_uuid,
+        iface_uuid,
+        activity_uuid,
+        &[0u8; 16],
+        IMPLICIT_READ,
+        seq,
+        api,
+        slot,
+        subslot,
+        index,
+        length,
+    )
 }
 
 // The argument list mirrors the wire fields one-to-one, so the count is
