@@ -126,8 +126,12 @@ pub struct IoDataObject {
     pub data_length: usize,
     /// Offset for IOPS (Provider Status) byte.
     pub iops_offset: usize,
-    /// Offset for IOCS (Consumer Status) byte, if applicable.
-    pub iocs_offset: usize,
+    /// Offset of the IOCS (Consumer Status) byte, for the objects that carry
+    /// one. `None` rather than a sentinel: offset 0 is a real position — an
+    /// input-only device puts the first IOCS byte there — and a `> 0` guard
+    /// silently excluded it, so its consumer status stayed BAD for the whole
+    /// session.
+    pub iocs_offset: Option<usize>,
 }
 
 /// IOCR configuration from AR setup (IOCRConfig): timing parameters and IO
@@ -271,13 +275,13 @@ impl CyclicDataBuilder {
         }
     }
 
-    /// Set Consumer Status (IOCS) for a slot/subslot (objects with
-    /// iocs_offset > 0 only); unknown slot/subslot is silently ignored.
+    /// Set Consumer Status (IOCS) for a slot/subslot (objects that carry one);
+    /// unknown slot/subslot is silently ignored.
     pub fn set_iocs(&mut self, slot: u16, subslot: u16, status: u8) {
         for obj in &self.config.objects {
             if obj.slot == slot && obj.subslot == subslot {
-                if obj.iocs_offset > 0 {
-                    self.write_buffer[obj.iocs_offset] = status;
+                if let Some(off) = obj.iocs_offset {
+                    self.write_buffer[off] = status;
                     self.dirty = true;
                 }
                 return;
@@ -298,8 +302,8 @@ impl CyclicDataBuilder {
     /// Set IOCS for all objects that have an iocs_offset.
     pub fn set_all_iocs(&mut self, status: u8) {
         for obj in &self.config.objects {
-            if obj.iocs_offset > 0 {
-                self.write_buffer[obj.iocs_offset] = status;
+            if let Some(off) = obj.iocs_offset {
+                self.write_buffer[off] = status;
             }
         }
         self.dirty = true;
@@ -364,7 +368,7 @@ pub fn build_iocr_configs(
                 frame_offset,
                 data_length: s.input_length,
                 iops_offset: frame_offset + s.input_length,
-                iocs_offset: 0,
+                iocs_offset: None,
             });
             frame_offset += s.input_length + 1; // data + IOPS byte
         }
@@ -398,7 +402,7 @@ pub fn build_iocr_configs(
                 frame_offset,
                 data_length: s.output_length,
                 iops_offset: frame_offset + s.output_length,
-                iocs_offset: 0,
+                iocs_offset: None,
             });
             frame_offset += s.output_length + 1; // data + IOPS byte
         }
@@ -413,7 +417,7 @@ pub fn build_iocr_configs(
                 frame_offset,
                 data_length: 0,
                 iops_offset: 0,
-                iocs_offset: frame_offset,
+                iocs_offset: Some(frame_offset),
             });
             frame_offset += 1;
         }

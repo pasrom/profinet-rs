@@ -1027,7 +1027,7 @@ mod tests {
                 frame_offset: 0,
                 data_length: 4,
                 iops_offset: 4,
-                iocs_offset: 0,
+                iocs_offset: None,
             }],
         }
     }

@@ -236,7 +236,7 @@ fn data_object(
         frame_offset,
         data_length,
         iops_offset,
-        iocs_offset: 0,
+        iocs_offset: None,
     }
 }
 

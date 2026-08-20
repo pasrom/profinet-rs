@@ -38,7 +38,7 @@ fn make_input_iocr(send_clock_factor: u16, reduction_ratio: u16) -> IocrConfig {
             frame_offset: 0,
             data_length: 4,
             iops_offset: 4,
-            iocs_offset: 0,
+            iocs_offset: None,
         }],
     }
 }
@@ -60,7 +60,7 @@ fn make_output_iocr(send_clock_factor: u16, reduction_ratio: u16) -> IocrConfig 
             frame_offset: 0,
             data_length: 4,
             iops_offset: 4,
-            iocs_offset: 0,
+            iocs_offset: None,
         }],
     }
 }
@@ -676,7 +676,7 @@ fn output_iocr_has_iocs_for_input_only_slots() {
     let iocs_obj = &output_iocr.objects[1];
     assert_eq!(iocs_obj.slot, 1);
     assert_eq!(iocs_obj.data_length, 0);
-    assert_eq!(iocs_obj.iocs_offset, 5); // after data(4) + IOPS(1)
+    assert_eq!(iocs_obj.iocs_offset, Some(5)); // after data(4) + IOPS(1)
 
     // CyclicDataBuilder.set_all_iocs actually writes the IOCS byte.
     let mut builder = CyclicDataBuilder::new(output_iocr);
@@ -931,4 +931,23 @@ fn the_data_callback_is_silent_while_the_device_marks_it_bad() {
     let events = seen.lock().unwrap();
     assert_eq!(events.len(), 1, "the BAD frame must not be delivered");
     assert_eq!(events[0], (1, 1, vec![0x01, 0x02, 0x03, 0x04]));
+}
+
+#[test]
+fn an_input_only_device_still_gets_its_consumer_status() {
+    // No submodule has output data, so the first IOCS byte sits at offset 0.
+    // A "> 0" guard treated that as "no IOCS" and left the device seeing BAD
+    // for the whole session.
+    let slots = [fake_slot(1, 1, 8, 0), fake_slot(2, 1, 4, 0)];
+    let (_input, output) = build_iocr_configs(&slots, 0xC001, 0xC000, 32, 32, 3);
+    assert_eq!(output.objects.len(), 2);
+    assert_eq!(output.objects[0].iocs_offset, Some(0));
+    assert_eq!(output.objects[1].iocs_offset, Some(1));
+
+    let mut builder = CyclicDataBuilder::new(output);
+    builder.set_all_iocs(IOXS_GOOD);
+    builder.swap();
+    let frame = builder.build();
+    assert_eq!(frame[0], IOXS_GOOD, "slot 1 consumer status");
+    assert_eq!(frame[1], IOXS_GOOD, "slot 2 consumer status");
 }
