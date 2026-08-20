@@ -136,23 +136,26 @@ golden["dcp_identify_all_request"] = {
 }
 
 
-def _dcp_set(option: int, suboption: int, value: bytes) -> bytes:
+def _dcp_set(option: int, suboption: int, value: bytes, permanent: bool = False) -> bytes:
     """Build a DCP Set request frame exactly as set_param / set_ip do.
 
-    Note: the value already carries the 2-byte block qualifier prefix; the DCP
-    header length field counts a pad byte for odd values that set_param never
-    actually appends to the frame (reference quirk, preserved as-is).
+    An odd-length value is followed by a pad byte, and DCPDataLength counts it.
+    Earlier vectors declared the pad in the length without ever appending it,
+    leaving the frame one byte shorter than announced.
     """
-    block = PNDCPBlockRequest(option, suboption, len(value) + 2, payload=b"\x00\x00" + value)
-    padding = 1 if len(value) % 2 == 1 else 0
+    qualifier = b"\x00\x01" if permanent else b"\x00\x00"
+    block = PNDCPBlockRequest(option, suboption, len(value) + 2, payload=qualifier + value)
+    block_data = bytes(block)
+    if len(value) % 2 == 1:
+        block_data += b"\x00"
     dcp = PNDCPHeader(
         0xFEFD,
         PNDCPHeader.SET,
         PNDCPHeader.REQUEST,
         DCP_XID,
         0,
-        len(value) + 6 + padding,
-        payload=block,
+        len(block_data),
+        payload=block_data,
     )
     return bytes(EthernetHeader(DCP_DST, DCP_SRC, 0x8892, payload=dcp))
 
@@ -162,8 +165,12 @@ golden["dcp_set_name_request"] = {
     "hex": _dcp_set(0x02, 0x02, b"device").hex(),
 }
 golden["dcp_set_name_request_odd"] = {
-    "desc": "Set Name-of-Station 'plc-1' (odd length: DCP length counts an unsent pad byte)",
+    "desc": "Set Name-of-Station 'plc-1' (odd length: block carries a pad byte)",
     "hex": _dcp_set(0x02, 0x02, b"plc-1").hex(),
+}
+golden["dcp_set_name_request_permanent"] = {
+    "desc": "Set Name-of-Station 'device' with the permanent qualifier 0x0001",
+    "hex": _dcp_set(0x02, 0x02, b"device", permanent=True).hex(),
 }
 golden["dcp_set_ip_request"] = {
     "desc": "Set IP 192.168.10.3/255.255.255.0 gw 192.168.10.1, qualifier temporary 0x0000",

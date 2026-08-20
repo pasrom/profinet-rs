@@ -48,8 +48,12 @@
     "hex": "0a1b2c3d4e5f0200000000018892fefd0400010203040000000c020200080000646576696365"
   },
   "dcp_set_name_request_odd": {
-    "desc": "Set Name-of-Station 'plc-1' (odd length: DCP length counts an unsent pad byte)",
-    "hex": "0a1b2c3d4e5f0200000000018892fefd0400010203040000000c020200070000706c632d31"
+    "desc": "Set Name-of-Station 'plc-1' (odd length: block carries a pad byte)",
+    "hex": "0a1b2c3d4e5f0200000000018892fefd0400010203040000000c020200070000706c632d3100"
+  },
+  "dcp_set_name_request_permanent": {
+    "desc": "Set Name-of-Station 'device' with the permanent qualifier 0x0001",
+    "hex": "0a1b2c3d4e5f0200000000018892fefd0400010203040000000c020200080001646576696365"
   },
   "dcp_set_ip_request": {
     "desc": "Set IP 192.168.10.3/255.255.255.0 gw 192.168.10.1, qualifier temporary 0x0000",
