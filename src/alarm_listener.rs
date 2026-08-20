@@ -11,7 +11,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::alarms::{parse_alarm_notification, AlarmNotification};
 use crate::pcap::RawSocket;
@@ -29,6 +29,25 @@ pub const FRAME_ID_ALARM_LOW: u16 = 0xFE01;
 pub const ETHERTYPE_PROFINET: u16 = 0x8892;
 /// UDP port for alarm reception (transport 1).
 pub const ALARM_UDP_PORT: u16 = 34964;
+
+/// RTA AddFlags: window size in bits 0-3.
+pub const ADD_FLAGS_WINDOW_1: u8 = 0x01;
+/// RTA AddFlags: TACK, "transport-acknowledge this PDU", bit 4.
+pub const ADD_FLAGS_TACK: u8 = 0x10;
+
+/// RTA sequence numbers start at 0xFFFF and wrap modulo 0x8000 once
+/// acknowledged, so the counters are masked rather than allowed to roll over a
+/// full u16.
+pub const SEQ_NUM_INIT: u16 = 0xFFFF;
+/// Initial value of the "previous" counters (`SEQ_NUM_INIT - 1`).
+pub const SEQ_NUM_INIT_O: u16 = 0xFFFE;
+/// Mask applied after every increment.
+pub const SEQ_NUM_MASK: u16 = 0x7FFF;
+
+/// 802.1Q priority tag for high-priority alarm frames: PCP 6, VID 0.
+pub const VLAN_TAG_ALARM_HIGH: [u8; 4] = [0x81, 0x00, 0xC0, 0x00];
+/// 802.1Q priority tag for low-priority alarm frames: PCP 5, VID 0.
+pub const VLAN_TAG_ALARM_LOW: [u8; 4] = [0x81, 0x00, 0xA0, 0x00];
 
 // ---------------------------------------------------------------------------
 // RTA-PDU header (PNRTAHeader from protocol.py)
@@ -57,6 +76,22 @@ impl RtaHeader {
     pub const RTA_TYPE_ERR: u8 = 0x04;
     pub const VERSION_1: u8 = 0x01;
     pub const VERSION_2: u8 = 0x02;
+
+    /// PDU type: the **low** nibble of `pdu_type`.
+    pub fn kind(&self) -> u8 {
+        self.pdu_type & 0x0F
+    }
+
+    /// Protocol version: the **high** nibble of `pdu_type`.
+    pub fn version(&self) -> u8 {
+        (self.pdu_type >> 4) & 0x0F
+    }
+
+    /// Encode the `pdu_type` byte: version in the high nibble, type in the
+    /// low one.
+    pub fn encode_pdu_type(version: u8, kind: u8) -> u8 {
+        ((version & 0x0F) << 4) | (kind & 0x0F)
+    }
 
     /// Parse an RTA-PDU header from the first 12 bytes of `data`.
     pub fn from_bytes(data: &[u8]) -> Result<RtaHeader, String> {
@@ -106,6 +141,26 @@ pub struct AlarmEndpoint {
     pub device_mac: [u8; 6],
     /// Transport type: 0 = Layer 2 (RTA), 1 = UDP.
     pub transport: u16,
+    /// Retransmit interval as factor x 100 ms. The spec negotiates this in the
+    /// AlarmCRBlockRes, which this crate does not parse yet, so it is local
+    /// policy for now.
+    pub rta_timeout_factor: u16,
+    /// Retransmissions before giving up; local policy, see above.
+    pub rta_retries: u16,
+}
+
+impl Default for AlarmEndpoint {
+    fn default() -> Self {
+        AlarmEndpoint {
+            interface: String::new(),
+            controller_ref: 0,
+            device_ref: 0,
+            device_mac: [0; 6],
+            transport: 0,
+            rta_timeout_factor: 1,
+            rta_retries: 3,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -155,10 +210,13 @@ pub fn process_layer2_alarm(
         if rta.alarm_dst_endpoint != controller_ref {
             return Ok(None);
         }
-        // Only an RTA DATA PDU carries an alarm notification. ACK/NACK/ERR PDUs
-        // (the type is the high nibble of pdu_type) have no notification body,
-        // so skip them instead of misparsing their content as an alarm.
-        if rta.pdu_type >> 4 != RtaHeader::RTA_TYPE_DATA {
+        if rta.version() != RtaHeader::VERSION_1 {
+            return Ok(None);
+        }
+        // Only an RTA DATA PDU carries an alarm notification. ACK/NACK/ERR
+        // PDUs have no notification body, so skip them instead of misparsing
+        // their content as an alarm.
+        if rta.kind() != RtaHeader::RTA_TYPE_DATA {
             return Ok(None);
         }
         (Some(rta), &payload[RtaHeader::SIZE..])
@@ -210,9 +268,56 @@ pub fn build_alarm_ack(alarm: &AlarmNotification) -> Vec<u8> {
     out
 }
 
-/// Build the complete Layer-2 acknowledgment frame as `_send_layer2_ack`:
-/// Ethernet header (to the endpoint's device MAC) + alarm frame ID (matching
-/// the alarm's priority) + RTA header (DATA, version 1) + AlarmAck PDU.
+/// An outgoing RTA PDU: everything about it that is not fixed by the endpoint.
+struct RtaPdu<'a> {
+    kind: u8,
+    add_flags: u8,
+    send_seq_num: u16,
+    ack_seq_num: u16,
+    var_part: &'a [u8],
+    high_priority: bool,
+}
+
+/// Build a complete Ethernet frame carrying an RTA PDU, as `_build_rta_frame`:
+/// Ethernet header (to the endpoint's device MAC) + alarm-priority VLAN tag +
+/// EtherType + alarm frame ID + RTA header + variable part.
+fn build_rta_frame(endpoint: &AlarmEndpoint, controller_mac: &[u8; 6], pdu: RtaPdu<'_>) -> Vec<u8> {
+    let RtaPdu {
+        kind,
+        add_flags,
+        send_seq_num,
+        ack_seq_num,
+        var_part,
+        high_priority,
+    } = pdu;
+    let rta = RtaHeader {
+        alarm_dst_endpoint: endpoint.device_ref,
+        alarm_src_endpoint: endpoint.controller_ref,
+        pdu_type: RtaHeader::encode_pdu_type(RtaHeader::VERSION_1, kind),
+        add_flags,
+        send_seq_num,
+        ack_seq_num,
+        var_part_len: var_part.len() as u16,
+    };
+    let (frame_id, vlan_tag) = if high_priority {
+        (FRAME_ID_ALARM_HIGH, VLAN_TAG_ALARM_HIGH)
+    } else {
+        (FRAME_ID_ALARM_LOW, VLAN_TAG_ALARM_LOW)
+    };
+
+    let mut frame = Vec::with_capacity(18 + 2 + RtaHeader::SIZE + var_part.len());
+    frame.extend_from_slice(&endpoint.device_mac);
+    frame.extend_from_slice(controller_mac);
+    frame.extend_from_slice(&vlan_tag);
+    frame.extend_from_slice(&ETHERTYPE_PROFINET.to_be_bytes());
+    frame.extend_from_slice(&frame_id.to_be_bytes());
+    frame.extend_from_slice(&rta.to_bytes());
+    frame.extend_from_slice(var_part);
+    frame
+}
+
+/// Build the complete Layer-2 AlarmAck frame as `_send_ack`: a DATA PDU with
+/// the TACK flag set, so the device transport-acknowledges it in turn.
 pub fn build_layer2_ack_frame(
     endpoint: &AlarmEndpoint,
     controller_mac: &[u8; 6],
@@ -221,29 +326,277 @@ pub fn build_layer2_ack_frame(
     ack_data: &[u8],
     high_priority: bool,
 ) -> Vec<u8> {
-    let rta = RtaHeader {
-        alarm_dst_endpoint: endpoint.device_ref,
-        alarm_src_endpoint: endpoint.controller_ref,
-        pdu_type: (RtaHeader::RTA_TYPE_DATA << 4) | RtaHeader::VERSION_1,
-        add_flags: 0,
+    build_rta_frame(
+        endpoint,
+        controller_mac,
+        RtaPdu {
+            kind: RtaHeader::RTA_TYPE_DATA,
+            add_flags: ADD_FLAGS_WINDOW_1 | ADD_FLAGS_TACK,
+            send_seq_num,
+            ack_seq_num,
+            var_part: ack_data,
+            high_priority,
+        },
+    )
+}
+
+/// Build an RTA PDU that carries no variable part: a transport ACK or a NACK.
+/// The `kind` decides which; everything else about the two is identical.
+fn build_rta_control_frame(
+    endpoint: &AlarmEndpoint,
+    controller_mac: &[u8; 6],
+    kind: u8,
+    send_seq_num: u16,
+    ack_seq_num: u16,
+    high_priority: bool,
+) -> Vec<u8> {
+    build_rta_frame(
+        endpoint,
+        controller_mac,
+        RtaPdu {
+            kind,
+            add_flags: ADD_FLAGS_WINDOW_1,
+            send_seq_num,
+            ack_seq_num,
+            var_part: &[],
+            high_priority,
+        },
+    )
+}
+
+/// Build a pure RTA transport ACK (`_send_transport_ack`). Devices retransmit
+/// the alarm and then abort the AR when the DATA PDU carrying it is never
+/// transport-acknowledged.
+pub fn build_transport_ack_frame(
+    endpoint: &AlarmEndpoint,
+    controller_mac: &[u8; 6],
+    send_seq_num: u16,
+    ack_seq_num: u16,
+    high_priority: bool,
+) -> Vec<u8> {
+    build_rta_control_frame(
+        endpoint,
+        controller_mac,
+        RtaHeader::RTA_TYPE_ACK,
         send_seq_num,
         ack_seq_num,
-        var_part_len: ack_data.len() as u16,
-    };
-    let frame_id = if high_priority {
-        FRAME_ID_ALARM_HIGH
-    } else {
-        FRAME_ID_ALARM_LOW
-    };
+        high_priority,
+    )
+}
 
-    let mut frame = Vec::with_capacity(14 + 2 + RtaHeader::SIZE + ack_data.len());
-    frame.extend_from_slice(&endpoint.device_mac);
-    frame.extend_from_slice(controller_mac);
-    frame.extend_from_slice(&ETHERTYPE_PROFINET.to_be_bytes());
-    frame.extend_from_slice(&frame_id.to_be_bytes());
-    frame.extend_from_slice(&rta.to_bytes());
-    frame.extend_from_slice(ack_data);
-    frame
+/// Build an RTA NACK for an out-of-sequence DATA PDU (`_send_nack`).
+pub fn build_nack_frame(
+    endpoint: &AlarmEndpoint,
+    controller_mac: &[u8; 6],
+    send_seq_num: u16,
+    ack_seq_num: u16,
+    high_priority: bool,
+) -> Vec<u8> {
+    build_rta_control_frame(
+        endpoint,
+        controller_mac,
+        RtaHeader::RTA_TYPE_NACK,
+        send_seq_num,
+        ack_seq_num,
+        high_priority,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// RTA transport state machine (pure)
+// ---------------------------------------------------------------------------
+
+/// What the receiver must do with an incoming RTA PDU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RtaAction {
+    /// Nothing to do: wrong version, a type without transport meaning, a DATA
+    /// PDU that asks for no acknowledgment, or a stale ACK.
+    Ignore,
+    /// The device acknowledged our last DATA PDU; any pending retransmission
+    /// can be dropped.
+    OurDataAcked,
+    /// The device reports a sequence error on our side.
+    DeviceNack,
+    /// The device sent an ERR PDU; its variable part carries a PNIOStatus.
+    DeviceError,
+    /// Retransmission of a PDU already accepted: acknowledge it again, but do
+    /// not process the notification a second time.
+    ReAck,
+    /// Out of sequence: answer with a NACK and do not process it.
+    SendNack,
+    /// In sequence: process the notification, then transport-acknowledge it.
+    Accept,
+}
+
+/// RTA sequence bookkeeping (the APMS/APMR counters of `AlarmListener`).
+///
+/// Pure and independent of any socket so the transport rules can be tested
+/// without a device: the live loop only turns the returned [`RtaAction`] into
+/// frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RtaSequencer {
+    send_seq_num: u16,
+    send_seq_num_o: u16,
+    exp_seq_num: u16,
+    exp_seq_num_o: u16,
+}
+
+impl Default for RtaSequencer {
+    fn default() -> Self {
+        RtaSequencer {
+            send_seq_num: SEQ_NUM_INIT,
+            send_seq_num_o: SEQ_NUM_INIT_O,
+            exp_seq_num: SEQ_NUM_INIT,
+            exp_seq_num_o: SEQ_NUM_INIT_O,
+        }
+    }
+}
+
+impl RtaSequencer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sequence number to put in the next PDU we send.
+    pub fn send_seq_num(&self) -> u16 {
+        self.send_seq_num
+    }
+
+    /// Sequence numbers for a transport ACK or NACK: the previous send counter
+    /// and the last accepted receive counter, as the reference sends them.
+    pub fn ack_seq_pair(&self) -> (u16, u16) {
+        (self.send_seq_num_o, self.exp_seq_num_o)
+    }
+
+    /// Sequence numbers for a DATA PDU we originate (the AlarmAck): the
+    /// current send counter, acknowledging the last PDU we accepted. Naming
+    /// both pairings here keeps a caller from combining the wrong two.
+    pub fn data_seq_pair(&self) -> (u16, u16) {
+        (self.send_seq_num, self.exp_seq_num_o)
+    }
+
+    fn advance_send(&mut self) {
+        self.send_seq_num_o = self.send_seq_num;
+        // Wrapping: the counters start at 0xFFFF, so the very first increment
+        // overflows a u16 before the mask brings it back into range.
+        self.send_seq_num = self.send_seq_num.wrapping_add(1) & SEQ_NUM_MASK;
+    }
+
+    /// Classify an incoming PDU and advance the counters accordingly.
+    pub fn on_pdu(&mut self, header: &RtaHeader) -> RtaAction {
+        if header.version() != RtaHeader::VERSION_1 {
+            return RtaAction::Ignore;
+        }
+        match header.kind() {
+            RtaHeader::RTA_TYPE_ACK => {
+                if header.ack_seq_num == self.send_seq_num {
+                    self.advance_send();
+                    RtaAction::OurDataAcked
+                } else {
+                    RtaAction::Ignore
+                }
+            }
+            RtaHeader::RTA_TYPE_NACK => RtaAction::DeviceNack,
+            RtaHeader::RTA_TYPE_ERR => RtaAction::DeviceError,
+            RtaHeader::RTA_TYPE_DATA => {
+                if header.add_flags & ADD_FLAGS_TACK == 0 {
+                    return RtaAction::Ignore;
+                }
+                if header.send_seq_num == self.exp_seq_num_o {
+                    return RtaAction::ReAck;
+                }
+                if header.send_seq_num != self.exp_seq_num {
+                    return RtaAction::SendNack;
+                }
+                self.exp_seq_num_o = self.exp_seq_num;
+                self.exp_seq_num = self.exp_seq_num.wrapping_add(1) & SEQ_NUM_MASK;
+                // A DATA PDU may piggyback the ack for our last DATA.
+                if header.ack_seq_num == self.send_seq_num {
+                    self.advance_send();
+                }
+                RtaAction::Accept
+            }
+            _ => RtaAction::Ignore,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-priority channel state
+// ---------------------------------------------------------------------------
+
+/// RTA state for one alarm priority. High and low priority are independent
+/// APMS/APMR instances in IEC 61158-6-10: each keeps its own sequence
+/// counters, so sharing one set makes a high-priority alarm look like a
+/// retransmission of a low-priority one that happened to use the same number.
+struct AlarmChannel {
+    seq: RtaSequencer,
+    /// AlarmAck awaiting its transport ACK: frame, when to retransmit,
+    /// retransmissions left.
+    pending: Option<(Vec<u8>, Instant, u16)>,
+    /// AlarmAck payloads waiting for the window to free. The APMS send window
+    /// is one PDU: a second AlarmAck sent before the first is acknowledged
+    /// would carry the same sequence number and be discarded as a duplicate.
+    queued: std::collections::VecDeque<Vec<u8>>,
+    high_priority: bool,
+}
+
+impl AlarmChannel {
+    fn new(high_priority: bool) -> Self {
+        AlarmChannel {
+            seq: RtaSequencer::new(),
+            pending: None,
+            queued: std::collections::VecDeque::new(),
+            high_priority,
+        }
+    }
+
+    /// Retransmit an unacknowledged AlarmAck when its deadline passes, or send
+    /// the next queued one once the window is free. Giving up after the
+    /// configured retries is silent; the device may then abort the AR.
+    fn service(
+        &mut self,
+        sock: &mut RawSocket,
+        endpoint: &AlarmEndpoint,
+        controller_mac: &[u8; 6],
+        retransmit_after: Duration,
+        now: Instant,
+    ) {
+        if let Some((frame, due, retries_left)) = self.pending.as_mut() {
+            if now >= *due {
+                if *retries_left > 0 {
+                    let _ = sock.send(frame);
+                    *due = now + retransmit_after;
+                    *retries_left -= 1;
+                } else {
+                    self.pending = None;
+                }
+            }
+        }
+        if self.pending.is_some() {
+            return;
+        }
+        let Some(ack_data) = self.queued.pop_front() else {
+            return;
+        };
+        let (send_seq, ack_seq) = self.seq.data_seq_pair();
+        let frame = build_layer2_ack_frame(
+            endpoint,
+            controller_mac,
+            send_seq,
+            ack_seq,
+            &ack_data,
+            self.high_priority,
+        );
+        let _ = sock.send(&frame);
+        self.pending = Some((frame, now + retransmit_after, endpoint.rta_retries));
+    }
+
+    /// When the next deadline falls due, so the receive timeout can be capped
+    /// short enough to honour it.
+    fn next_due(&self) -> Option<Instant> {
+        self.pending.as_ref().map(|(_, due, _)| *due)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,44 +703,102 @@ impl AlarmListener {
         let controller_mac = self.controller_mac;
 
         self.thread = Some(std::thread::spawn(move || {
-            // RTA sequence tracking.
-            let mut send_seq_num: u16 = 0;
-            let mut recv_seq_num: u16 = 0;
+            // One channel per priority: their counters are independent.
+            let mut low = AlarmChannel::new(false);
+            let mut high_ch = AlarmChannel::new(true);
+            let retransmit_after =
+                Duration::from_millis(100 * u64::from(endpoint.rta_timeout_factor.max(1)));
 
             while running.load(Ordering::SeqCst) {
-                // 1 s receive timeout for a clean shutdown, as the reference.
-                let frame = match sock.recv(Duration::from_secs(1)) {
+                let now = Instant::now();
+                low.service(&mut sock, &endpoint, &controller_mac, retransmit_after, now);
+                high_ch.service(&mut sock, &endpoint, &controller_mac, retransmit_after, now);
+
+                // A second at most, for a clean shutdown, but never past a
+                // retransmission deadline: with the default timeout factor the
+                // interval is 100 ms, and a fixed 1 s wait would miss every
+                // one of them until the device gave up on us.
+                let mut wait = Duration::from_secs(1);
+                for due in [low.next_due(), high_ch.next_due()].into_iter().flatten() {
+                    wait = wait.min(due.saturating_duration_since(now));
+                }
+                let frame = match sock.recv(wait.max(Duration::from_millis(1))) {
                     Ok(Some(frame)) => frame,
                     Ok(None) => continue,
                     Err(_) => break,
                 };
 
-                let Some((_high, payload)) = check_layer2_frame(&frame, &endpoint.device_mac)
+                let Some((is_high, payload)) = check_layer2_frame(&frame, &endpoint.device_mac)
                 else {
                     continue;
                 };
-                let Ok(Some((rta, alarm))) = process_layer2_alarm(payload, endpoint.controller_ref)
-                else {
+                let Ok(rta) = RtaHeader::from_bytes(payload) else {
                     continue;
                 };
-                if let Some(rta) = rta {
-                    recv_seq_num = rta.send_seq_num;
+                if rta.alarm_dst_endpoint != endpoint.controller_ref {
+                    continue;
+                }
+                let channel = if is_high { &mut high_ch } else { &mut low };
+
+                let action = channel.seq.on_pdu(&rta);
+                if action == RtaAction::OurDataAcked {
+                    channel.pending = None;
+                    continue;
+                }
+                if action == RtaAction::SendNack {
+                    let (send_seq, ack_seq) = channel.seq.ack_seq_pair();
+                    let _ = sock.send(&build_nack_frame(
+                        &endpoint,
+                        &controller_mac,
+                        send_seq,
+                        ack_seq,
+                        is_high,
+                    ));
+                    continue;
+                }
+                // Ignore, DeviceNack and DeviceError carry no notification.
+                if action != RtaAction::ReAck && action != RtaAction::Accept {
+                    continue;
                 }
 
-                // Acknowledge, then invoke callbacks (send errors are logged
-                // and ignored by the reference; here they are just ignored).
-                send_seq_num = send_seq_num.wrapping_add(1);
-                let ack_frame = build_layer2_ack_frame(
+                // Transport-acknowledge before anything else, a retransmission
+                // included: the device retransmits and then aborts the AR
+                // without this.
+                let (send_seq, ack_seq) = channel.seq.ack_seq_pair();
+                let _ = sock.send(&build_transport_ack_frame(
                     &endpoint,
                     &controller_mac,
-                    send_seq_num,
-                    recv_seq_num,
-                    &build_alarm_ack(&alarm),
-                    // The reference picks the ack frame ID from the alarm's
-                    // block type, not the received frame ID.
-                    alarm.is_high_priority(),
+                    send_seq,
+                    ack_seq,
+                    is_high,
+                ));
+                if action == RtaAction::ReAck {
+                    // Already delivered once; acking again is the whole job.
+                    continue;
+                }
+
+                let Ok(Some((_, alarm))) = process_layer2_alarm(payload, endpoint.controller_ref)
+                else {
+                    continue;
+                };
+
+                // The application-level AlarmAck is a DATA PDU of ours, so it
+                // queues behind any unacknowledged one on this channel. The
+                // reference picks its frame ID from the alarm's block type
+                // rather than the received frame ID.
+                let ack_channel = if alarm.is_high_priority() {
+                    &mut high_ch
+                } else {
+                    &mut low
+                };
+                ack_channel.queued.push_back(build_alarm_ack(&alarm));
+                ack_channel.service(
+                    &mut sock,
+                    &endpoint,
+                    &controller_mac,
+                    retransmit_after,
+                    Instant::now(),
                 );
-                let _ = sock.send(&ack_frame);
 
                 for (_, callback) in callbacks.lock().expect("callbacks lock poisoned").iter() {
                     callback(&alarm);

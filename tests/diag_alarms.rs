@@ -618,6 +618,7 @@ fn golden_layer2_ack_frame_byte_exact() {
         device_ref: u64_of(entry, "device_ref") as u16,
         device_mac,
         transport: 0,
+        ..Default::default()
     };
     let frame = build_layer2_ack_frame(
         &endpoint,
@@ -842,6 +843,7 @@ fn live_alarm_listener_starts_and_stops() {
             device_ref: 42,
             device_mac,
             transport: 0,
+            ..Default::default()
         },
         None,
     );
