@@ -22,7 +22,10 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _golden_common import dump, nrd, use_reference  # noqa: E402
+
+use_reference()
 
 from profinet.protocol import (  # noqa: E402
     PNAlarmCRBlockRes,
@@ -270,11 +273,8 @@ golden = {
     },
 }
 
-with open(OUT, "w") as f:
-    json.dump(golden, f, indent=2)
-    f.write("\n")
-
-print(f"wrote {os.path.normpath(OUT)}")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+dump(OUT, golden)
 for k, v in golden.items():
     if isinstance(v, dict) and "hex" in v:
         print(f"  {k:28s} {len(v['hex']) // 2:4d}B {v['hex'][:64]}...")

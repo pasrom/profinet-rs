@@ -15,9 +15,11 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _golden_common import dump, nrd, use_reference  # noqa: E402
 
-from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
+use_reference()
+
 from profinet.protocol import (  # noqa: E402
     EthernetHeader,
     EthernetVLANHeader,
@@ -87,13 +89,6 @@ golden["object_uuid_dev0007_vendor0abc"] = {
 golden["iface_uuid_device"] = {"desc": "PNIO device interface uuid", "hex": PNRPCHeader.IFACE_UUID_DEVICE.hex()}
 
 
-def _nrd(payload: bytes) -> bytes:
-    # ArgsMaximum advertises the largest response we accept and must be >=
-    # ArgsLength; the reference tracks its receive buffer via NDR_ARGS_MAXIMUM.
-    args_max = max(NDR_ARGS_MAXIMUM, len(payload))
-    return bytes(
-        PNNRDData(args_max, len(payload), args_max, 0, len(payload), payload=payload)
-    )
 
 
 def _rpc(operation: int, nrd: bytes) -> bytes:
@@ -106,7 +101,7 @@ def _rpc(operation: int, nrd: bytes) -> bytes:
     )
 
 
-nrd_read = _nrd(bytes(read_iod))
+nrd_read = nrd(bytes(read_iod))
 golden["nrd_read_record"] = {"desc": "NRD wrapping the read IOD", "hex": nrd_read.hex()}
 golden["rpc_read_record"] = {
     "desc": "full Read Record RPC request; obj=dev0007/vendor0abc, iface=device, act=10..1f, seq0, op=READ(2)",
@@ -114,7 +109,7 @@ golden["rpc_read_record"] = {
 }
 golden["rpc_write_5000"] = {
     "desc": "full Write Record RPC request; idx5000 payload01, op=WRITE(3)",
-    "hex": _rpc(PNRPCHeader.WRITE, _nrd(bytes(write_iod))).hex(),
+    "hex": _rpc(PNRPCHeader.WRITE, nrd(bytes(write_iod))).hex(),
 }
 
 # --- DCP framing (fixed src MAC / XID instead of the random _generate_xid) --
@@ -269,10 +264,7 @@ golden["rt_ethernet_frame_c001"] = {
 }
 
 os.makedirs(os.path.dirname(OUT), exist_ok=True)
-with open(OUT, "w") as f:
-    json.dump(golden, f, indent=2)
-    f.write("\n")
-
-print(f"wrote {os.path.normpath(OUT)}")
+dump(OUT, golden)
 for k, v in golden.items():
-    print(f"  {k:24s} {v['hex']}")
+    if isinstance(v, dict) and "hex" in v:
+        print(f"  {k:24s} {v['hex']}")

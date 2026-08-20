@@ -100,6 +100,17 @@ Most wire-level tests assert byte-for-byte equality against golden vectors
 generated from profinet-py (`tools/gen_*golden*.py`). Tests that need real
 hardware are marked `#[ignore]`.
 
+Regenerating the vectors needs a profinet-py checkout as the oracle. It is
+taken from `PROFINET_PY`, defaulting to `~/git/profinet-py`, and must be
+0.6.3 or newer:
+
+```bash
+PROFINET_PY=/path/to/profinet-py python3 tools/gen_golden.py
+```
+
+Each golden file records the revision it came from under `_meta`, so a vector
+set can be traced back to the reference that produced it.
+
 ## License
 
 Copyright (C) 2026 Roman Passler

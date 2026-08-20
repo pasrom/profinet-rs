@@ -24,14 +24,16 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _golden_common import dump, nrd, use_reference  # noqa: E402
+
+use_reference()
 
 import profinet.rpc as prpc  # noqa: E402
 from profinet.blocks import (  # noqa: E402
     IODWriteMultipleBuilder,
     parse_write_multiple_response,
 )
-from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
 from profinet.protocol import (  # noqa: E402
     PNBlockHeader,
     PNIODHeader,
@@ -80,14 +82,6 @@ def rpc_request(opnum, seq, nrd_bytes):
             0,
             payload=nrd_bytes,
         )
-    )
-
-
-def nrd(payload):
-    """NRD wrapper exactly as RPCCon._create_nrd packs it."""
-    args_max = max(NDR_ARGS_MAXIMUM, len(payload))
-    return bytes(
-        PNNRDData(args_max, len(payload), args_max, 0, len(payload), payload=payload)
     )
 
 
@@ -362,11 +356,8 @@ golden = {
     },
 }
 
-with open(OUT, "w") as f:
-    json.dump(golden, f, indent=2)
-    f.write("\n")
-
-print(f"wrote {os.path.normpath(OUT)}")
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
+dump(OUT, golden)
 for k, v in golden.items():
     if isinstance(v, dict) and "hex" in v:
         print(f"  {k:26s} {len(v['hex']) // 2:4d}B {v['hex'][:64]}...")

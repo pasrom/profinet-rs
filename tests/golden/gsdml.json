@@ -1,7 +1,9 @@
 {
+  "_meta": {
+    "reference": "f0rw4rd/profinet-py",
+    "revision": "a629003"
+  },
   "device": {
-    "vendor_id": 2748,
-    "device_id": 7,
     "daps": [
       {
         "id": "IDD_DAP",
@@ -9,36 +11,34 @@
         "submodules": [
           {
             "id": "IDS_DAP",
-            "submodule_ident": 1,
             "input_length": 0,
-            "output_length": 0
+            "output_length": 0,
+            "submodule_ident": 1
           }
         ],
         "system_submodules": [
           {
-            "subslot_number": 32768,
-            "submodule_ident": 32768
+            "submodule_ident": 32768,
+            "subslot_number": 32768
           },
           {
-            "subslot_number": 32769,
-            "submodule_ident": 32769
+            "submodule_ident": 32769,
+            "subslot_number": 32769
           },
           {
-            "subslot_number": 32770,
-            "submodule_ident": 32770
+            "submodule_ident": 32770,
+            "subslot_number": 32770
           }
         ],
         "useable_modules": [
           {
-            "target": "IDM_DEMO_IO",
+            "allowed": [],
             "fixed": [
               1
             ],
-            "allowed": []
+            "target": "IDM_DEMO_IO"
           },
           {
-            "target": "IDM_DEMO_IN",
-            "fixed": [],
             "allowed": [
               2,
               3,
@@ -47,11 +47,14 @@
               6,
               7,
               8
-            ]
+            ],
+            "fixed": [],
+            "target": "IDM_DEMO_IN"
           }
         ]
       }
     ],
+    "device_id": 7,
     "modules": [
       {
         "id": "IDM_DEMO_IO",
@@ -59,9 +62,9 @@
         "submodules": [
           {
             "id": "IDS_DEMO_IO",
-            "submodule_ident": 17,
             "input_length": 47,
-            "output_length": 2
+            "output_length": 2,
+            "submodule_ident": 17
           }
         ],
         "useable_submodules": []
@@ -72,106 +75,107 @@
         "submodules": [
           {
             "id": "IDS_DEMO_IN",
-            "submodule_ident": 33,
             "input_length": 8,
-            "output_length": 0
+            "output_length": 0,
+            "submodule_ident": 33
           }
         ],
         "useable_submodules": []
       }
     ],
-    "submodule_catalog": []
+    "submodule_catalog": [],
+    "vendor_id": 2748
   },
   "io_slots": [
     {
-      "slot": 0,
-      "subslot": 1,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 1,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 1
     },
     {
-      "slot": 0,
-      "subslot": 32768,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 32768,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 32768
     },
     {
-      "slot": 0,
-      "subslot": 32769,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 32769,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 32769
     },
     {
-      "slot": 0,
-      "subslot": 32770,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 32770,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 32770
     },
     {
-      "slot": 1,
-      "subslot": 1,
-      "module_ident": 16,
-      "submodule_ident": 17,
       "input_length": 47,
-      "output_length": 2
+      "module_ident": 16,
+      "output_length": 2,
+      "slot": 1,
+      "submodule_ident": 17,
+      "subslot": 1
     }
   ],
   "io_slots_from_device": [
     {
-      "slot": 0,
-      "subslot": 1,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 1,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 1
     },
     {
-      "slot": 0,
-      "subslot": 32768,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 32768,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 32768
     },
     {
-      "slot": 0,
-      "subslot": 32769,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 32769,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 32769
     },
     {
-      "slot": 0,
-      "subslot": 32770,
+      "input_length": 0,
       "module_ident": 1,
+      "output_length": 0,
+      "slot": 0,
       "submodule_ident": 32770,
-      "input_length": 0,
-      "output_length": 0
+      "subslot": 32770
     },
     {
-      "slot": 1,
-      "subslot": 1,
-      "module_ident": 16,
-      "submodule_ident": 17,
       "input_length": 47,
-      "output_length": 2
+      "module_ident": 16,
+      "output_length": 2,
+      "slot": 1,
+      "submodule_ident": 17,
+      "subslot": 1
     },
     {
-      "slot": 9,
-      "subslot": 1,
-      "module_ident": 57005,
-      "submodule_ident": 48879,
       "input_length": 0,
-      "output_length": 0
+      "module_ident": 57005,
+      "output_length": 0,
+      "slot": 9,
+      "submodule_ident": 48879,
+      "subslot": 1
     }
   ]
 }
