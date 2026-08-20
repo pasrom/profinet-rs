@@ -197,7 +197,7 @@ pub fn build_alarm_ack(alarm: &AlarmNotification) -> Vec<u8> {
         } else {
             0
         }
-        | if alarm.ar_diagnosis_state { 0x4000 } else { 0 };
+        | if alarm.ar_diagnosis_state { 0x8000 } else { 0 };
 
     let mut out = Vec::with_capacity(22);
     out.extend_from_slice(&block_type.to_be_bytes());

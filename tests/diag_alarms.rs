@@ -690,7 +690,33 @@ fn golden_alarm_cr_res() {
 #[test]
 fn alarm_notification_too_short_errors() {
     assert!(parse_alarm_notification(&[]).is_err());
-    assert!(parse_alarm_notification(&[0u8; 27]).is_err());
+    // One byte short of BlockHeader(6) + Body(20).
+    assert!(parse_alarm_notification(&[0u8; 25]).is_err());
+}
+
+#[test]
+fn item_less_alarm_is_accepted_at_26_bytes() {
+    // BlockHeader(6) + Body(20), BlockLength 22. Rejected while the body was
+    // taken as 22 bytes, which also pushed the item cursor two bytes into the
+    // first item of any alarm that did carry one.
+    let pdu = hex::decode("000200160100000b000000000001000100000030000001310042").unwrap();
+    assert_eq!(pdu.len(), 26);
+    let alarm = parse_alarm_notification(&pdu).expect("item-less alarm must parse");
+    assert_eq!(alarm.alarm_type, 11);
+    assert_eq!(alarm.alarm_sequence_number, 0x42);
+    assert!(alarm.items.is_empty());
+    assert!(alarm.raw_payload.is_empty());
+}
+
+#[test]
+fn ethernet_padding_past_block_length_yields_no_phantom_items() {
+    // Same PDU padded to the 60-byte Ethernet minimum. BlockLength bounds the
+    // parse, so the padding must not surface as items with USI 0x0000.
+    let mut pdu = hex::decode("000200160100000b000000000001000100000030000001310042").unwrap();
+    pdu.resize(60, 0x00);
+    let alarm = parse_alarm_notification(&pdu).expect("padded alarm must parse");
+    assert!(alarm.items.is_empty(), "phantom items: {:?}", alarm.items);
+    assert!(alarm.raw_payload.is_empty());
 }
 
 #[test]
