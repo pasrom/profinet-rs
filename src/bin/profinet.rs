@@ -29,7 +29,7 @@ use profinet_rs::dcp;
 use profinet_rs::gsdml::load_gsdml;
 use profinet_rs::im;
 use profinet_rs::pcap::{self, RawSocket};
-use profinet_rs::rt::build_iocr_configs;
+use profinet_rs::rt::{build_iocr_configs, IOXS_DATA_STATE_GOOD};
 use profinet_rs::transport::{RpcConn, READ_LENGTH};
 use profinet_rs::util::{ip2s, mac2s, s2ip, s2mac};
 
@@ -946,18 +946,15 @@ fn cmd_cyclic(
         return Err("cyclic IO not established by device".to_string());
     }
 
-    // Step 5: parameter phase and ApplicationReady.
     println!("\nCyclic IO ({cycle_ms}ms cycle)...");
-    conn.prm_end()?;
-    println!("  PrmEnd OK");
-    conn.application_ready(APP_READY_TIMEOUT)?;
-    println!("  ApplicationReady OK");
     println!(
         "  Input frame: 0x{:04X}, Output frame: 0x{:04X}",
         result.input_frame_id, result.output_frame_id
     );
 
-    // Step 6: build IOCRConfigs and start the cyclic controller.
+    // Step 5: build IOCRConfigs and start RT output *before* PrmEnd. Some
+    // devices only start their input provider once they see valid controller
+    // frames, and with PrmEnd first they never produce input at all.
     let (input_iocr, output_iocr) = build_iocr_configs(
         &io_slots,
         result.input_frame_id,
@@ -967,7 +964,31 @@ fn cmd_cyclic(
         6,
     );
     let mut cyclic = CyclicController::new(iface, cm_mac, dev.mac, input_iocr, output_iocr, 3)?;
+    // A device disowns its input data without dropping the AR, so the
+    // transition is the only notification there is.
+    cyclic.on_input_status(|slot, subslot, iops| {
+        if iops & IOXS_DATA_STATE_GOOD == 0 {
+            println!("  slot {slot}/{subslot}: device reports IOPS BAD (0x{iops:02X})");
+        } else {
+            println!("  slot {slot}/{subslot}: IOPS GOOD (0x{iops:02X})");
+        }
+    });
     cyclic.start()?;
+
+    // Step 6: parameter phase and ApplicationReady, with output already
+    // flowing.
+    // On failure the AR is released and the frames stopped, rather than
+    // leaving the device to wait out its data-hold timer.
+    if let Err(e) = conn
+        .prm_end()
+        .and_then(|_| conn.application_ready(APP_READY_TIMEOUT))
+    {
+        cyclic.stop();
+        conn.release();
+        return Err(e);
+    }
+    println!("  PrmEnd OK");
+    println!("  ApplicationReady OK");
 
     let input_slots: Vec<(u16, u16)> = io_slots
         .iter()
@@ -990,7 +1011,13 @@ fn cmd_cyclic(
                     Some(data) if !data.is_empty() => {
                         format!("{slot}:{subslot}={}", hex_encode(&data))
                     }
-                    _ => format!("{slot}:{subslot}=--"),
+                    // Withheld data and no data at all are different states:
+                    // the device disowning its payload must not read as a
+                    // silent link.
+                    _ => match cyclic.get_input_status(slot, subslot) {
+                        Some(iops) => format!("{slot}:{subslot}=BAD(0x{iops:02X})"),
+                        None => format!("{slot}:{subslot}=--"),
+                    },
                 },
             )
             .collect();
@@ -1997,9 +2024,6 @@ fn start_cyclic_tier(
         conn.release();
         return Err("cyclic IO not established by device".to_string());
     }
-    conn.prm_end()?;
-    conn.application_ready(APP_READY_TIMEOUT)?;
-
     let (input_iocr, output_iocr) = build_iocr_configs(
         &io_slots,
         result.input_frame_id,
@@ -2023,6 +2047,16 @@ fn start_cyclic_tier(
         ));
     });
     cyclic.start()?;
+    // PrmEnd only after RT output is flowing: some devices start their input
+    // provider only once they see valid controller frames.
+    if let Err(e) = conn
+        .prm_end()
+        .and_then(|_| conn.application_ready(APP_READY_TIMEOUT))
+    {
+        cyclic.stop();
+        conn.release();
+        return Err(e);
+    }
     emit(&cyclic_started_line(
         cycle_ms,
         result.input_frame_id,
