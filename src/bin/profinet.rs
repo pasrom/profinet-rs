@@ -29,7 +29,7 @@ use profinet_rs::dcp;
 use profinet_rs::gsdml::load_gsdml;
 use profinet_rs::im;
 use profinet_rs::pcap::{self, RawSocket};
-use profinet_rs::rt::{build_iocr_configs, IOXS_DATA_STATE_GOOD};
+use profinet_rs::rt::{build_iocr_configs, is_rt_class_1_frame_id, IOXS_DATA_STATE_GOOD};
 use profinet_rs::transport::{RpcConn, READ_LENGTH};
 use profinet_rs::util::{ip2s, mac2s, s2ip, s2mac};
 
@@ -944,6 +944,14 @@ fn cmd_cyclic(
     if !result.has_cyclic {
         conn.release();
         return Err("cyclic IO not established by device".to_string());
+    }
+    if !is_rt_class_1_frame_id(result.output_frame_id) {
+        conn.release();
+        return Err(format!(
+            "device assigned no usable output frame ID (0x{:04X}); \
+             transmitting on it would be silently discarded",
+            result.output_frame_id
+        ));
     }
 
     println!("\nCyclic IO ({cycle_ms}ms cycle)...");
@@ -2023,6 +2031,14 @@ fn start_cyclic_tier(
     if !result.has_cyclic {
         conn.release();
         return Err("cyclic IO not established by device".to_string());
+    }
+    if !is_rt_class_1_frame_id(result.output_frame_id) {
+        conn.release();
+        return Err(format!(
+            "device assigned no usable output frame ID (0x{:04X}); \
+             transmitting on it would be silently discarded",
+            result.output_frame_id
+        ));
     }
     let (input_iocr, output_iocr) = build_iocr_configs(
         &io_slots,

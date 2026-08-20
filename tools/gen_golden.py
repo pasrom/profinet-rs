@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
 
+from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
 from profinet.protocol import (  # noqa: E402
     EthernetHeader,
     EthernetVLANHeader,
@@ -87,7 +88,12 @@ golden["iface_uuid_device"] = {"desc": "PNIO device interface uuid", "hex": PNRP
 
 
 def _nrd(payload: bytes) -> bytes:
-    return bytes(PNNRDData(1500, len(payload), 1500, 0, len(payload), payload=payload))
+    # ArgsMaximum advertises the largest response we accept and must be >=
+    # ArgsLength; the reference tracks its receive buffer via NDR_ARGS_MAXIMUM.
+    args_max = max(NDR_ARGS_MAXIMUM, len(payload))
+    return bytes(
+        PNNRDData(args_max, len(payload), args_max, 0, len(payload), payload=payload)
+    )
 
 
 def _rpc(operation: int, nrd: bytes) -> bytes:

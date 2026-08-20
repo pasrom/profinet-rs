@@ -31,6 +31,7 @@ from profinet.blocks import (  # noqa: E402
     IODWriteMultipleBuilder,
     parse_write_multiple_response,
 )
+from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
 from profinet.protocol import (  # noqa: E402
     PNBlockHeader,
     PNIODHeader,
@@ -84,7 +85,10 @@ def rpc_request(opnum, seq, nrd_bytes):
 
 def nrd(payload):
     """NRD wrapper exactly as RPCCon._create_nrd packs it."""
-    return bytes(PNNRDData(1500, len(payload), 1500, 0, len(payload), payload=payload))
+    args_max = max(NDR_ARGS_MAXIMUM, len(payload))
+    return bytes(
+        PNNRDData(args_max, len(payload), args_max, 0, len(payload), payload=payload)
+    )
 
 
 # --- IODWriteMultipleReq (0xE040) -------------------------------------------

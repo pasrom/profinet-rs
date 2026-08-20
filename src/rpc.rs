@@ -21,6 +21,15 @@ pub const RPC_FLAGS1_LASTFRAG: u8 = 0x02;
 pub const RPC_FLAGS1_NOFACK: u8 = 0x08;
 pub const RPC_FLAGS1_IDEMPOTENT: u8 = 0x20;
 
+/// NDR ArgsMaximum floor: the largest response we advertise accepting. This is
+/// the reference's value, kept identical so the golden vectors stay a
+/// byte-for-byte oracle.
+///
+/// Note it is below the 4096 a full-length read requests, so a device that
+/// honours ArgsMaximum strictly may cap a maximum-size record — an
+/// inconsistency inherited from the reference rather than introduced here.
+pub const NDR_ARGS_MAXIMUM: u32 = 4000;
+
 /// PNRPCHeader.IFACE_UUID_DEVICE: PNIO-Device interface UUID in big-endian
 /// byte order (matching drep=0x00 in `_create_rpc`).
 pub const IFACE_UUID_DEVICE: [u8; 16] = [
@@ -45,10 +54,15 @@ pub fn object_uuid(dev_high: u8, dev_low: u8, ven_high: u8, ven_low: u8) -> [u8;
 /// all big-endian.
 pub fn nrd(payload: &[u8]) -> Vec<u8> {
     let len = payload.len() as u32;
+    // ArgsMaximum advertises the largest response we accept and must be at
+    // least the request's ArgsLength, or a device rejects the NDR header
+    // outright. It also caps a read response, so it tracks the receive buffer
+    // instead of a fixed 1500 that a 5000-byte write already exceeded.
+    let args_maximum = NDR_ARGS_MAXIMUM.max(len);
     let mut out = Vec::with_capacity(20 + payload.len());
-    out.extend_from_slice(&1500u32.to_be_bytes()); // args_maximum_status
+    out.extend_from_slice(&args_maximum.to_be_bytes()); // args_maximum_status
     out.extend_from_slice(&len.to_be_bytes()); // args_length
-    out.extend_from_slice(&1500u32.to_be_bytes()); // maximum_count
+    out.extend_from_slice(&args_maximum.to_be_bytes()); // maximum_count
     out.extend_from_slice(&0u32.to_be_bytes()); // offset
     out.extend_from_slice(&len.to_be_bytes()); // actual_count
     out.extend_from_slice(payload);

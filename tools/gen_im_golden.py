@@ -28,6 +28,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
 
 from profinet import blocks, indices  # noqa: E402
+from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
 from profinet.protocol import (  # noqa: E402
     PNBlockHeader,
     PNInM0,
@@ -52,7 +53,10 @@ golden = {}
 
 # --- READ request frames (rpc.py read(): IOD + NRD + RPC, seq 0) -------------
 def _nrd(payload: bytes) -> bytes:
-    return bytes(PNNRDData(1500, len(payload), 1500, 0, len(payload), payload=payload))
+    args_max = max(NDR_ARGS_MAXIMUM, len(payload))
+    return bytes(
+        PNNRDData(args_max, len(payload), args_max, 0, len(payload), payload=payload)
+    )
 
 
 def _rpc_read(nrd: bytes) -> bytes:
