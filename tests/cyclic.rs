@@ -1003,3 +1003,24 @@ fn a_monitoring_only_watchdog_keeps_the_consumer_status_good() {
         "a monitoring-only watchdog must not fault"
     );
 }
+
+#[test]
+fn set_all_iocs_only_dirties_the_buffer_on_a_change() {
+    // The RX path calls this for every received frame. Dirtying the buffer
+    // unconditionally makes the TX cycle copy it every cycle, which is exactly
+    // what the dirty flag exists to avoid.
+    let mut builder = CyclicDataBuilder::new(output_iocr_with_iocs());
+    builder.set_all_iocs(IOXS_GOOD);
+    assert!(builder.is_dirty(), "the first write changes the byte");
+    builder.swap();
+    assert!(!builder.is_dirty());
+
+    builder.set_all_iocs(IOXS_GOOD);
+    assert!(
+        !builder.is_dirty(),
+        "writing the status it already holds must not dirty the buffer"
+    );
+
+    builder.set_all_iocs(IOXS_BAD);
+    assert!(builder.is_dirty(), "a real change must dirty it again");
+}
