@@ -162,6 +162,34 @@ jobs:
             exit 1
           }
 
+      # The protocol number decides whether a consumer can talk to this build
+      # at all, so it is read from the binary that was just built rather than
+      # from a human or a grep of the source. One target is enough: the number
+      # is a property of the commit, not of the platform.
+      - name: Stamp the serve protocol into the asset names
+        run: |
+          # The linux binary links libpcap dynamically, so the loader needs it
+          # even for a subcommand that opens no socket.
+          sudo apt-get update && sudo apt-get install -y libpcap0.8
+          linux=$(find artifacts -type f -name 'profinet-linux-x86_64-*')
+          # upload-artifact does not preserve the executable bit.
+          chmod +x "$linux"
+          proto=$("$linux" proto | jq -r .proto)
+          case "$proto" in
+            ''|*[!0-9]*)
+              echo "the binary did not report a numeric proto: '$proto'"
+              exit 1
+              ;;
+          esac
+          echo "serve protocol: $proto"
+          for f in $(find artifacts -type f); do
+            case "$f" in
+              *.exe) mv "$f" "${f%.exe}-proto${proto}.exe" ;;
+              *)     mv "$f" "${f}-proto${proto}" ;;
+            esac
+          done
+          find artifacts -type f
+
       # Pinned to the commit behind v3.0.2, not to the tag: a tag is a movable
       # pointer in someone else's repository, and `@v3` or `@v3.0.2` runs
       # whatever it points at on the day the workflow runs. This is the one step
