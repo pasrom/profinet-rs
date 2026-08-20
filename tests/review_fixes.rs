@@ -17,10 +17,12 @@
 //!     compile time, not discoverable at runtime.
 
 use profinet_rs::alarm_listener::{
-    build_layer2_ack_frame, AlarmEndpoint, RtaHeader, FRAME_ID_ALARM_HIGH, FRAME_ID_ALARM_LOW,
+    build_layer2_ack_frame, AlarmEndpoint, RtaHeader, ADD_FLAGS_TACK, ADD_FLAGS_WINDOW_1,
+    FRAME_ID_ALARM_HIGH, FRAME_ID_ALARM_LOW, VLAN_TAG_ALARM_HIGH, VLAN_TAG_ALARM_LOW,
 };
 use profinet_rs::dcp::{DCP_HELLO_MULTICAST_MAC, DCP_MULTICAST_MAC};
 use profinet_rs::transport::parse_rpc_header;
+use profinet_rs::util::skip_vlan_tags;
 
 // =============================================================================
 // H-1: DREP-aware RPC response parsing
@@ -138,29 +140,48 @@ fn ack_endpoint() -> AlarmEndpoint {
         device_ref: 42,
         device_mac: [0x22; 6],
         transport: 0,
+        ..Default::default()
     }
+}
+
+/// Offset of the frame ID in an alarm frame: past any VLAN tags and the
+/// EtherType. Derived rather than hardcoded, so adding or removing a tag
+/// cannot silently point these assertions at the wrong bytes.
+fn frame_id_offset(frame: &[u8]) -> usize {
+    skip_vlan_tags(frame) + 2
 }
 
 #[test]
 fn rta_type_data_for_alarm_ack() {
-    // The ack uses RTA_TYPE_DATA (0x01), not RTA_TYPE_ACK (0x03).
+    // The ack goes out as RTA_TYPE_DATA (0x01), not RTA_TYPE_ACK (0x03), with
+    // the version in the high nibble of pdu_type and the type in the low one.
     let frame = build_layer2_ack_frame(&ack_endpoint(), &[0x11; 6], 0, 0, &[0u8; 20], false);
-    // dst(6) + src(6) + ethertype(2) + frame_id(2) = 16; pdu_type at RTA + 4.
-    let pdu_type = frame[16 + 4];
-    assert_eq!((pdu_type >> 4) & 0x0F, RtaHeader::RTA_TYPE_DATA);
-    assert_eq!(pdu_type & 0x0F, RtaHeader::VERSION_1);
+    let header = RtaHeader::from_bytes(&frame[frame_id_offset(&frame) + 2..]).unwrap();
+    assert_eq!(header.kind(), RtaHeader::RTA_TYPE_DATA);
+    assert_eq!(header.version(), RtaHeader::VERSION_1);
+    // TACK is what stops the device retransmitting and then aborting the AR.
+    assert_eq!(header.add_flags, ADD_FLAGS_WINDOW_1 | ADD_FLAGS_TACK);
 }
 
 #[test]
 fn high_priority_alarm_uses_high_frame_id() {
     let frame = build_layer2_ack_frame(&ack_endpoint(), &[0x11; 6], 0, 0, &[0u8; 20], true);
-    let frame_id = u16::from_be_bytes([frame[14], frame[15]]);
-    assert_eq!(frame_id, FRAME_ID_ALARM_HIGH);
+    assert_eq!(&frame[12..16], &VLAN_TAG_ALARM_HIGH);
+    let at = frame_id_offset(&frame);
+    assert_eq!(
+        u16::from_be_bytes([frame[at], frame[at + 1]]),
+        FRAME_ID_ALARM_HIGH
+    );
 }
 
 #[test]
 fn low_priority_alarm_uses_low_frame_id() {
     let frame = build_layer2_ack_frame(&ack_endpoint(), &[0x11; 6], 0, 0, &[0u8; 20], false);
-    let frame_id = u16::from_be_bytes([frame[14], frame[15]]);
-    assert_eq!(frame_id, FRAME_ID_ALARM_LOW);
+    // Alarm-low frames are tagged PCP 5, not PCP 6 like RT and alarm-high.
+    assert_eq!(&frame[12..16], &VLAN_TAG_ALARM_LOW);
+    let at = frame_id_offset(&frame);
+    assert_eq!(
+        u16::from_be_bytes([frame[at], frame[at + 1]]),
+        FRAME_ID_ALARM_LOW
+    );
 }

@@ -36,6 +36,12 @@ from profinet.diagnosis import (  # noqa: E402
     parse_diagnosis_block,
     parse_diagnosis_simple,
 )
+from profinet.alarm_listener import (  # noqa: E402
+    ADD_FLAGS_TACK,
+    ADD_FLAGS_WINDOW_1,
+    AlarmEndpoint,
+    AlarmListener,
+)
 from profinet.protocol import (  # noqa: E402
     PNAlarmAckPDU,
     PNBlockHeader,
@@ -487,7 +493,7 @@ alarm_case(
 rta = PNRTAHeader(
     alarm_dst_endpoint=0x0102,
     alarm_src_endpoint=0x0304,
-    pdu_type=(PNRTAHeader.RTA_TYPE_DATA << 4) | PNRTAHeader.VERSION_1,
+    pdu_type=(PNRTAHeader.VERSION_1 << 4) | PNRTAHeader.RTA_TYPE_DATA,
     add_flags=0x00,
     send_seq_num=0x0005,
     ack_seq_num=0x0006,
@@ -499,7 +505,7 @@ golden["rta_header"] = {
     "hex": bytes(rta).hex(),
     "alarm_dst_endpoint": 0x0102,
     "alarm_src_endpoint": 0x0304,
-    "pdu_type": (PNRTAHeader.RTA_TYPE_DATA << 4) | PNRTAHeader.VERSION_1,
+    "pdu_type": (PNRTAHeader.VERSION_1 << 4) | PNRTAHeader.RTA_TYPE_DATA,
     "add_flags": 0x00,
     "send_seq_num": 0x0005,
     "ack_seq_num": 0x0006,
@@ -540,23 +546,26 @@ DEVICE_MAC = bytes.fromhex("020000000002")
 CONTROLLER_MAC = bytes.fromhex("020000000001")
 _send_seq = 1  # listener increments 0 -> 1 before the first ack.
 _recv_seq = 0x0005  # taken from the alarm's RTA send_seq_num.
-ack_rta = PNRTAHeader(
-    alarm_dst_endpoint=42,  # device_ref.
-    alarm_src_endpoint=1,  # controller_ref.
-    pdu_type=(PNRTAHeader.RTA_TYPE_DATA << 4) | PNRTAHeader.VERSION_1,
-    add_flags=0,
-    send_seq_num=_send_seq,
-    ack_seq_num=_recv_seq,
-    var_part_len=len(ack_data),
-    payload=b"",
+# Composed by the reference implementation itself rather than reassembled
+# here: the AlarmAck goes out as a DATA PDU with the TACK flag set, and the
+# frame carries the alarm-priority VLAN tag.
+_listener = AlarmListener(
+    AlarmEndpoint(
+        interface="lo",
+        controller_ref=1,
+        device_ref=42,
+        device_mac=DEVICE_MAC,
+    ),
+    CONTROLLER_MAC,
 )
-eth_frame = (
-    DEVICE_MAC
-    + CONTROLLER_MAC
-    + struct.pack(">H", 0x8892)
-    + struct.pack(">H", 0xFE01)  # low-priority ack frame ID.
-    + bytes(ack_rta)
-    + ack_data
+eth_frame = _listener._build_rta_frame(
+    PNRTAHeader.RTA_TYPE_DATA,
+    ADD_FLAGS_WINDOW_1 | ADD_FLAGS_TACK,
+    _send_seq,
+    _recv_seq,
+    ack_data,
+    DEVICE_MAC,
+    False,  # low priority
 )
 golden["layer2_ack_frame"] = {
     "desc": "full L2 AlarmAck frame as _send_layer2_ack (low prio, "
@@ -577,8 +586,11 @@ _alarm_bytes = bytes.fromhex(golden["alarm_diag_channel"]["hex"])
 in_rta = PNRTAHeader(
     alarm_dst_endpoint=1,
     alarm_src_endpoint=42,
-    pdu_type=(PNRTAHeader.RTA_TYPE_DATA << 4) | PNRTAHeader.VERSION_1,
-    add_flags=0,
+    pdu_type=(PNRTAHeader.VERSION_1 << 4) | PNRTAHeader.RTA_TYPE_DATA,
+    # A device asks for the transport ACK on its alarms; without TACK the
+    # reference discards the PDU, so a fixture without it would not represent
+    # a frame the receive path ever accepts.
+    add_flags=ADD_FLAGS_WINDOW_1 | ADD_FLAGS_TACK,
     send_seq_num=0x0005,
     ack_seq_num=0xFFFF,
     var_part_len=len(_alarm_bytes),
