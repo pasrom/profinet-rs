@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.expanduser("~/git/profinet-py"))
 
 from profinet.blocks import SlotInfo  # noqa: E402
 from profinet.gsdml import load_gsdml  # noqa: E402
+from profinet.rpc import NDR_ARGS_MAXIMUM  # noqa: E402
 from profinet.protocol import (  # noqa: E402
     PNARBlockRequest,
     PNBlockHeader,
@@ -134,7 +135,8 @@ expected_submodule = conn._build_expected_submodule_block(setup)
 # concatenated without inter-block padding.
 body = ar_iocr_controller + input_iocr + output_iocr + alarm_cr + expected_submodule
 
-nrd = bytes(PNNRDData(1500, len(body), 1500, 0, len(body), payload=body))
+_args_max = max(NDR_ARGS_MAXIMUM, len(body))
+nrd = bytes(PNNRDData(_args_max, len(body), _args_max, 0, len(body), payload=body))
 rpc = bytes(
     PNRPCHeader(
         0x04, PNRPCHeader.REQUEST, 0x20, 0x00, bytes([0, 0, 0]), 0x00,

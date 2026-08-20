@@ -15,6 +15,15 @@ pub const ETHERTYPE_PROFINET: u16 = 0x8892;
 /// Frame ID ranges.
 pub const FRAME_ID_RT_CLASS_1_MIN: u16 = 0x8000;
 pub const FRAME_ID_RT_CLASS_1_MAX: u16 = 0xFBFF;
+
+/// Whether a frame ID can carry RT_CLASS_1 cyclic data. The controller now
+/// lets the device assign the output CR's frame ID, so the answer has to be
+/// checked before transmitting: a device that omits the IOCRBlockRes leaves it
+/// 0x0000, and one that echoes the request leaves it 0xFFFF. Both are
+/// reserved, and frames sent with them are discarded without a word.
+pub fn is_rt_class_1_frame_id(frame_id: u16) -> bool {
+    (FRAME_ID_RT_CLASS_1_MIN..=FRAME_ID_RT_CLASS_1_MAX).contains(&frame_id)
+}
 pub const FRAME_ID_ALARM_HIGH: u16 = 0xFC01;
 pub const FRAME_ID_ALARM_LOW: u16 = 0xFE01;
 

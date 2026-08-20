@@ -102,8 +102,10 @@ fn iocr_api_object(out: &mut Vec<u8>, slot: u16, subslot: u16, frame_offset: u16
 /// one API sub-block (api 0) listing an IODataObject per submodule carrying
 /// data in this IOCR's direction, then an IOCS entry for every other
 /// submodule; frame offsets accumulate data length + 1 IOPS byte per data
-/// object and 1 byte per IOCS. `iocr_type` is 1=Input (frame_id 0xC000+ref),
-/// 2=Output (frame_id 0x8000+ref).
+/// object and 1 byte per IOCS. `iocr_type` is 1=Input (the controller proposes
+/// frame_id 0xC000+ref, in the RTC1 range) or 2=Output (the controller sends
+/// 0xFFFF and the device assigns the frame ID, returning it in the
+/// IOCRBlockRes of the Connect response).
 pub fn iocr_block_req(iocr_type: u16, iocr_reference: u16, setup: &IocrSetup) -> Vec<u8> {
     // IODataObjects: submodules with data in this direction.
     let mut objects = Vec::new();
@@ -143,9 +145,12 @@ pub fn iocr_block_req(iocr_type: u16, iocr_reference: u16, setup: &IocrSetup) ->
     // IOCRAPI: API(4) ++ nbr_io_data(2) ++ io_data[] ++ nbr_iocs(2) ++ iocs[].
     let api_block_len = 4 + 2 + objects.len() + 2 + iocs.len();
     let frame_id = if iocr_type == 1 {
+        // Input CR: the controller proposes a frame ID in the RTC1 range.
         0xC000 + iocr_reference
     } else {
-        0x8000 + iocr_reference
+        // Output CR: 0xFFFF asks the device to assign it, which it returns in
+        // the IOCRBlockRes. Proposing one here is not the controller's call.
+        0xFFFF
     };
 
     let mut out = Vec::with_capacity(46 + api_block_len);

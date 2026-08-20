@@ -258,9 +258,12 @@ fn iocr_data_length_has_minimum_40() {
     let data_length = |b: &[u8]| u16::from_be_bytes([b[16], b[17]]);
     assert_eq!(data_length(&input), 52);
     assert_eq!(data_length(&output), 40);
-    // Frame IDs: 0xC000 + ref for input, 0x8000 + ref for output.
+    // Frame IDs: the controller proposes 0xC000 + ref for the input CR, and
+    // sends 0xFFFF for the output CR so the device assigns it and returns the
+    // real one in the IOCRBlockRes. Proposing an output frame ID here is not
+    // the controller's call, and a device may reject the Connect over it.
     assert_eq!(u16::from_be_bytes([input[18], input[19]]), 0xC001);
-    assert_eq!(u16::from_be_bytes([output[18], output[19]]), 0x8002);
+    assert_eq!(u16::from_be_bytes([output[18], output[19]]), 0xFFFF);
 }
 
 // ---------------------------------------------------------------------------
