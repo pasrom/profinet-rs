@@ -135,6 +135,14 @@ impl ResetMode {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Print the NDJSON protocol version and build identity of this binary.
+    ///
+    /// Answers from the binary alone: no network, no interface, no device. A
+    /// consumer that has just installed a helper has no other way to check it
+    /// — the `serve` hello line carries the same protocol number, but it is
+    /// only emitted once an AR to a device is up.
+    Proto,
+
     /// Discover PROFINET devices.
     Discover,
 
@@ -1400,6 +1408,25 @@ struct Hello<'a> {
     gap_ms: u64,
     cyclic: bool,
     allow_mask: u8,
+}
+
+/// `{"proto":..,"version":..,"git":..}` — what this binary is, without
+/// touching the network. Deliberately not a `type`-tagged event line: it is
+/// the answer to a question asked of the binary, not something that happened
+/// during a session.
+#[derive(Serialize)]
+struct Proto {
+    proto: u32,
+    version: &'static str,
+    git: &'static str,
+}
+
+fn proto_line() -> String {
+    json_line(&Proto {
+        proto: SERVE_PROTO,
+        version: env!("CARGO_PKG_VERSION"),
+        git: env!("GIT_HASH"),
+    })
 }
 
 fn hello_line(station: &str, read_only: bool, gap_ms: u64, cyclic: bool, allow_mask: u8) -> String {
@@ -3059,6 +3086,13 @@ fn safe_shutdown(
 }
 
 fn run(cli: &Cli) -> Result<i32, String> {
+    // Answered from the binary alone, so it comes before the interface is
+    // resolved and before any socket is opened.
+    if matches!(cli.command, Command::Proto) {
+        println!("{}", proto_line());
+        return Ok(0);
+    }
+
     // Every command below talks to the network, so the interface is resolved
     // once here rather than per arm. A command that does not need one is
     // dispatched before this point.
@@ -3069,6 +3103,9 @@ fn run(cli: &Cli) -> Result<i32, String> {
     let timeout = Duration::from_secs(cli.timeout);
     // The DCP commands need the controller MAC; look it up once up front.
     match &cli.command {
+        // Dispatched above, before the interface guard; this arm exists only to
+        // keep the match exhaustive.
+        Command::Proto => Ok(0),
         Command::Discover => cmd_discover(iface, timeout),
         Command::GetParam { target, param } => {
             let my_mac = pcap::get_mac(iface)?;
@@ -3226,6 +3263,13 @@ mod tests {
         assert!(match_device(vec![dev.clone()], "other-device").is_none());
         assert!(match_device(vec![dev.clone()], "192.168.0.9").is_none());
         assert!(match_device(vec![dev], "not-an-ip-or-name").is_none());
+    }
+
+    #[test]
+    fn proto_needs_no_interface() {
+        let cli = parse(&["profinet", "proto"]);
+        assert!(cli.interface.is_none());
+        assert_eq!(run(&cli).expect("proto must not need an interface"), 0);
     }
 
     #[test]
@@ -4002,6 +4046,21 @@ mod tests {
     /// arguments inside a builder changes the output here.
     #[test]
     fn emitted_lines_are_pinned() {
+        // Not an event line and not id-first: an answer about the binary
+        // itself. Two of its three fields are stamped at build time, so the
+        // pin substitutes them from the same source the builder reads — the
+        // key order and the shape are still pinned byte for byte, which is
+        // what a consumer parses.
+        assert_eq!(
+            proto_line(),
+            format!(
+                r#"{{"proto":{},"version":"{}","git":"{}"}}"#,
+                SERVE_PROTO,
+                env!("CARGO_PKG_VERSION"),
+                env!("GIT_HASH")
+            )
+        );
+
         // Answers to a request, all id-first.
         assert_eq!(bye_line(7), r#"{"id":7,"type":"bye"}"#);
         assert_eq!(
