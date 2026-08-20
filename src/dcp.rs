@@ -6,8 +6,9 @@
 //! This module is pure functions over bytes; the raw-L2 socket transport
 //! lives in a later module.
 
+use crate::util::strip_eth;
+
 pub const PROFINET_ETHERTYPE: u16 = 0x8892;
-pub const VLAN_ETHERTYPE: u16 = 0x8100;
 
 /// DCP multicast addresses per IEC 61158-6-10.
 pub const DCP_MULTICAST_MAC: [u8; 6] = [0x01, 0x0E, 0xCF, 0x00, 0x00, 0x00];
@@ -331,28 +332,7 @@ pub fn reset_request(src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32, mode: u16) 
 /// returning the DCP payload. Mirrors the VLAN handling shared by dcp.py
 /// read_response and _parse_set_response.
 fn dcp_payload(frame: &[u8]) -> Result<&[u8], String> {
-    if frame.len() < 14 {
-        return Err(format!(
-            "frame too short for Ethernet header: {} bytes",
-            frame.len()
-        ));
-    }
-    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
-    let payload = &frame[14..];
-    if ethertype == VLAN_ETHERTYPE {
-        if payload.len() < 4 {
-            return Err("VLAN frame too short".to_string());
-        }
-        let inner_type = u16::from_be_bytes([payload[2], payload[3]]);
-        if inner_type != PROFINET_ETHERTYPE {
-            return Err(format!("unexpected inner EtherType: 0x{inner_type:04X}"));
-        }
-        Ok(&payload[4..])
-    } else if ethertype != PROFINET_ETHERTYPE {
-        Err(format!("unexpected EtherType: 0x{ethertype:04X}"))
-    } else {
-        Ok(payload)
-    }
+    strip_eth(frame, PROFINET_ETHERTYPE)
 }
 
 /// Extract the DCP transaction id (xid) from a frame, for matching a response
@@ -515,22 +495,7 @@ pub fn parse_identify_response(frame: &[u8]) -> Result<DcpDevice, String> {
         ));
     }
     let src: [u8; 6] = frame[6..12].try_into().expect("6-byte slice");
-    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
-    let mut payload = &frame[14..];
-
-    if ethertype == VLAN_ETHERTYPE {
-        // VLAN header: 2 bytes TCI + 2 bytes inner ethertype.
-        if payload.len() < 4 {
-            return Err("VLAN frame too short".to_string());
-        }
-        let inner_type = u16::from_be_bytes([payload[2], payload[3]]);
-        if inner_type != PROFINET_ETHERTYPE {
-            return Err(format!("unexpected inner EtherType: 0x{inner_type:04X}"));
-        }
-        payload = &payload[4..];
-    } else if ethertype != PROFINET_ETHERTYPE {
-        return Err(format!("unexpected EtherType: 0x{ethertype:04X}"));
-    }
+    let payload = dcp_payload(frame)?;
 
     if payload.len() < 12 {
         return Err(format!(

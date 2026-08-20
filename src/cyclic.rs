@@ -32,12 +32,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::dcp::VLAN_ETHERTYPE;
 use crate::pcap::RawSocket;
 use crate::rt::{
-    build_ethernet_frame, CyclicDataBuilder, IocrConfig, RtFrame, DATA_STATUS_PROVIDER_RUN,
-    DATA_STATUS_STATE, DATA_STATUS_STATION_OK, DATA_STATUS_VALID, ETHERTYPE_PROFINET, IOXS_BAD,
-    IOXS_GOOD,
+    build_ethernet_frame, parse_ethernet_frame, CyclicDataBuilder, IocrConfig, RtFrame,
+    DATA_STATUS_PROVIDER_RUN, DATA_STATUS_STATE, DATA_STATUS_STATION_OK, DATA_STATUS_VALID,
+    ETHERTYPE_PROFINET, IOXS_BAD, IOXS_GOOD,
 };
 
 /// Default number of consecutive watchdog timeouts before FAULT.
@@ -322,28 +321,14 @@ impl Shared {
             return;
         }
 
-        // Parse Ethernet header. Handle both VLAN-tagged and untagged RT
-        // frames: Linux AF_PACKET usually strips the 802.1Q tag, but
-        // libpcap/BPF (macOS, Windows) delivers it in-band, so skip the
-        // 4-byte tag here the same way the DCP RX path does.
-        let src_mac = &data[6..12];
-        let mut ethertype = u16::from_be_bytes([data[12], data[13]]);
-        let mut payload_offset = 14;
-        if ethertype == VLAN_ETHERTYPE {
-            ethertype = u16::from_be_bytes([data[16], data[17]]);
-            payload_offset = 18;
-        }
-
-        if ethertype != ETHERTYPE_PROFINET {
+        // Filter by device MAC, then let the RT layer own the header: tagged
+        // and untagged frames both arrive (Linux AF_PACKET usually strips the
+        // 802.1Q tag, libpcap/BPF delivers it in-band, and a frame may carry
+        // more than one), which parse_ethernet_frame already handles.
+        if data[6..12] != self.dst_mac {
             return;
         }
-
-        // Filter by device MAC
-        if src_mac != self.dst_mac {
-            return;
-        }
-
-        let Ok(frame) = RtFrame::from_bytes(&data[payload_offset..]) else {
+        let Some(frame) = parse_ethernet_frame(data) else {
             return;
         };
 

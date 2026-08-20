@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::alarms::{parse_alarm_notification, AlarmNotification};
-use crate::dcp::VLAN_ETHERTYPE;
 use crate::pcap::RawSocket;
+use crate::util::skip_vlan_tags;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -124,12 +124,9 @@ pub fn check_layer2_frame<'a>(data: &'a [u8], device_mac: &[u8; 6]) -> Option<(b
     if data.len() < 14 || data[6..12] != device_mac[..] {
         return None;
     }
-    // Skip a VLAN tag so the EtherType and frame ID are read at the right offset.
-    let tag = if u16::from_be_bytes([data[12], data[13]]) == VLAN_ETHERTYPE {
-        4
-    } else {
-        0
-    };
+    // Skip any VLAN tags so the EtherType and frame ID are read at the right
+    // offset.
+    let tag = skip_vlan_tags(data) - 12;
     if data.len() < 16 + tag {
         return None;
     }
