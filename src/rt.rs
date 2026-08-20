@@ -312,10 +312,12 @@ impl CyclicDataBuilder {
     pub fn set_all_iocs(&mut self, status: u8) {
         for obj in &self.config.objects {
             if let Some(off) = obj.iocs_offset {
-                self.write_buffer[off] = status;
+                if self.write_buffer[off] != status {
+                    self.write_buffer[off] = status;
+                    self.dirty = true;
+                }
             }
         }
-        self.dirty = true;
     }
 
     /// Clear all data to zeros.

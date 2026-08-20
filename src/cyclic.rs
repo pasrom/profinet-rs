@@ -419,7 +419,12 @@ impl Shared {
         // Callbacks fire after the input lock is released (the reference calls
         // them under the lock, which the GIL makes safe; here that would
         // deadlock a callback reading input).
-        let mut updates = Vec::new();
+        let want_data = plock(&self.callbacks).on_input_data.is_some();
+        let mut updates = Vec::with_capacity(if want_data {
+            self.input_iocr.objects.len()
+        } else {
+            0
+        });
         let mut status_changes = Vec::new();
         {
             let mut input_data = plock(&self.input_data);
@@ -435,19 +440,19 @@ impl Shared {
                 let is_good = iops & IOXS_DATA_STATE_GOOD != 0;
                 let obj_data =
                     frame.payload[obj.frame_offset..obj.frame_offset + obj.data_length].to_vec();
-                input_data.insert(
-                    key,
-                    InputEntry {
-                        data: obj_data.clone(),
-                        iops,
-                    },
-                );
                 if is_good != was_good {
                     status_changes.push((obj.slot, obj.subslot, iops));
                 }
-                if is_good {
-                    updates.push((obj.slot, obj.subslot, obj_data));
+                if is_good && want_data {
+                    updates.push((obj.slot, obj.subslot, obj_data.clone()));
                 }
+                input_data.insert(
+                    key,
+                    InputEntry {
+                        data: obj_data,
+                        iops,
+                    },
+                );
             }
         }
         let callbacks = plock(&self.callbacks);
