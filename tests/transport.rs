@@ -465,3 +465,36 @@ fn pnio_status_survives_an_opposite_drep_response() {
     let err_be = parse_read_response(&nrd_be, false).unwrap_err();
     assert!(err_be.contains(&format!("0x{BUSY:08X}")), "got {err_be}");
 }
+
+#[test]
+fn ccontrol_response_echoes_the_requested_ndr_capacity() {
+    // The device sized its receive buffer from the maximum_count it sent, so
+    // the answer has to carry that number back rather than the length of our
+    // own control block. Patching the request's field must move the response's.
+    let golden = golden();
+    for (name, le) in [
+        ("ccontrol_request_le", true),
+        ("ccontrol_request_be", false),
+    ] {
+        let mut req = entry_bytes(&golden[name], "hex");
+        // RPC header is 80 bytes; the NDR array header follows, and
+        // maximum_count is its third u32.
+        let at = 80 + 8;
+        let patched: u32 = 0x0000_1234;
+        let bytes = if le {
+            patched.to_le_bytes()
+        } else {
+            patched.to_be_bytes()
+        };
+        req[at..at + 4].copy_from_slice(&bytes);
+
+        let hdr = parse_rpc_header(&req).expect("parse request");
+        let resp = ccontrol_response(&hdr, &[0x11; 16], 0x1234);
+
+        let echoed = u32::from_be_bytes([resp[at], resp[at + 1], resp[at + 2], resp[at + 3]]);
+        let echoed = if le { echoed.swap_bytes() } else { echoed };
+        assert_eq!(echoed, patched, "{name}: maximum_count must be echoed");
+        // LASTFRAG | NOFACK, as real controllers send it.
+        assert_eq!(resp[2], 0x0A, "{name}: flags1");
+    }
+}

@@ -181,9 +181,13 @@ def ccontrol_vectors(bo, drep0):
         )
     )
     n = len(resp_control)
-    resp_nrd = struct.pack(f"{bo}IIIII", 0, n, n, 0, n) + resp_control
+    # maximum_count echoes the capacity the request advertised, not the size of
+    # our own answer: the device sized its receive buffer from what it asked
+    # for. flags1 0x0A (LASTFRAG | NOFACK) is what real controllers send.
+    nrd_max_count = struct.unpack_from(f"{bo}I", nrd_req, 8)[0]
+    resp_nrd = struct.pack(f"{bo}IIIII", 0, n, nrd_max_count, 0, n) + resp_control
     resp = struct.pack(
-        "!BBBB3sB", 0x04, PNRPCHeader.RESPONSE, 0x00, 0x00, bytes([drep0, 0x00, 0x00]), 0x2A
+        "!BBBB3sB", 0x04, PNRPCHeader.RESPONSE, 0x0A, 0x00, bytes([drep0, 0x00, 0x00]), 0x2A
     )
     resp += OBJ + IFACE + ACT
     resp += struct.pack(

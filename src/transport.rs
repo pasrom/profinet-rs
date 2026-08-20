@@ -472,11 +472,17 @@ pub fn ccontrol_response(req: &ParsedRpc, ar_uuid: &[u8; 16], session_key: u16) 
 
     // Response NRD: pnio_status(0) ++ args_length ++ maximum_count ++
     // offset(0) ++ actual_count ++ control block, in the request byte order.
+    //
+    // maximum_count echoes the capacity the request advertised (its NDR array
+    // header, at offset 8) rather than the size of our own answer: the device
+    // sized its receive buffer from what it asked for, and substituting a
+    // smaller number describes an array it did not offer.
     let len = control.len() as u32;
+    let req_max_count = parse_nrd(&req.payload, le).map_or(len, |nrd| nrd.maximum_count);
     let mut nrd = Vec::with_capacity(20 + control.len());
     wr_u32(&mut nrd, 0, le); // pnio_status = OK
     wr_u32(&mut nrd, len, le); // args_length
-    wr_u32(&mut nrd, len, le); // maximum_count
+    wr_u32(&mut nrd, req_max_count, le); // maximum_count
     wr_u32(&mut nrd, 0, le); // offset
     wr_u32(&mut nrd, len, le); // actual_count
     nrd.extend_from_slice(&control);
@@ -484,7 +490,9 @@ pub fn ccontrol_response(req: &ParsedRpc, ar_uuid: &[u8; 16], session_key: u16) 
     let mut out = Vec::with_capacity(80 + nrd.len());
     out.push(req.version);
     out.push(PACKET_TYPE_RESPONSE);
-    out.push(0x00); // flags1
+    // What real controllers send on this response; a zero here is not what
+    // devices are used to seeing.
+    out.push(rpc::RPC_FLAGS1_LASTFRAG | rpc::RPC_FLAGS1_NOFACK);
     out.push(0x00); // flags2
     out.extend_from_slice(&req.drep);
     out.push(req.serial_high);
