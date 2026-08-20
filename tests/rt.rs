@@ -88,6 +88,44 @@ fn ethernet_round_trip() {
 }
 
 #[test]
+fn build_ethernet_frame_is_priority_tagged() {
+    // RT frames are defined as priority-tagged: TPID 0x8100, PCP 6, VID 0.
+    // Devices validate the negotiated priority and managed switches may drop
+    // untagged sub-64-byte RT frames as runts.
+    let eth = build_ethernet_frame(&[0xFF; 6], &[0x11; 6], &input_frame());
+    assert_eq!(&eth[12..16], &[0x81, 0x00, 0xC0, 0x00]);
+    assert_eq!(&eth[16..18], &0x8892u16.to_be_bytes());
+}
+
+#[test]
+fn parse_ethernet_accepts_untagged() {
+    // Linux AF_PACKET usually strips the tag before a raw socket sees it, so
+    // the untagged form must keep parsing.
+    let frame = input_frame();
+    let mut eth = Vec::new();
+    eth.extend_from_slice(&[0xFF; 6]);
+    eth.extend_from_slice(&[0x11; 6]);
+    eth.extend_from_slice(&0x8892u16.to_be_bytes());
+    eth.extend_from_slice(&frame.to_bytes());
+    assert_eq!(parse_ethernet_frame(&eth).unwrap(), frame);
+}
+
+#[test]
+fn parse_ethernet_accepts_stacked_tags() {
+    // Reading the EtherType at a fixed offset lost every tagged frame; a
+    // receiver has to skip any number of tags, 802.1ad included.
+    let frame = input_frame();
+    let mut eth = Vec::new();
+    eth.extend_from_slice(&[0xFF; 6]);
+    eth.extend_from_slice(&[0x11; 6]);
+    eth.extend_from_slice(&[0x88, 0xA8, 0xC0, 0x00]);
+    eth.extend_from_slice(&[0x81, 0x00, 0xC0, 0x00]);
+    eth.extend_from_slice(&0x8892u16.to_be_bytes());
+    eth.extend_from_slice(&frame.to_bytes());
+    assert_eq!(parse_ethernet_frame(&eth).unwrap(), frame);
+}
+
+#[test]
 fn parse_ethernet_rejects_wrong_ethertype() {
     let mut eth = build_ethernet_frame(&[0xFF; 6], &[0x11; 6], &input_frame());
     eth[12] = 0x08;

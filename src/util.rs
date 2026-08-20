@@ -78,3 +78,53 @@ pub fn s2ip(ip: &[u8]) -> Result<String, String> {
         .collect::<Vec<_>>()
         .join("."))
 }
+
+/// TPIDs that introduce an 802.1Q / 802.1ad tag.
+pub const VLAN_TPIDS: [u16; 2] = [0x8100, 0x88A8];
+
+/// Byte offset of the real EtherType in an Ethernet frame (`skip_vlan_tags`).
+///
+/// PROFINET devices commonly send RT and alarm frames 802.1Q priority-tagged
+/// (TPID 0x8100, VID 0). Whether the tag still reaches a raw socket depends on
+/// NIC and driver VLAN offload — Linux AF_PACKET usually strips it, libpcap and
+/// BPF deliver it in-band — so a receiver has to skip any number of tags rather
+/// than read the EtherType at a fixed offset.
+///
+/// Returns 12 for an untagged frame, plus 4 per tag.
+pub fn skip_vlan_tags(frame: &[u8]) -> usize {
+    let mut offset = 12;
+    while frame.len() >= offset + 4
+        && VLAN_TPIDS.contains(&u16::from_be_bytes([frame[offset], frame[offset + 1]]))
+    {
+        offset += 4;
+    }
+    offset
+}
+
+/// Strip the Ethernet header and return the payload, requiring the EtherType
+/// to be `want`. Any number of VLAN tags is skipped, so a tagged and an
+/// untagged frame are handled identically — the alternative is every protocol
+/// module carrying its own single-tag check, which is how they drifted apart.
+pub fn strip_eth(frame: &[u8], want: u16) -> Result<&[u8], String> {
+    if frame.len() < 14 {
+        return Err(format!(
+            "frame too short for Ethernet header: {} bytes",
+            frame.len()
+        ));
+    }
+    let at = skip_vlan_tags(frame);
+    if frame.len() < at + 2 {
+        return Err("VLAN frame too short".to_string());
+    }
+    let ethertype = u16::from_be_bytes([frame[at], frame[at + 1]]);
+    if ethertype != want {
+        // "inner" when a tag was skipped, so the message says which field
+        // disagreed.
+        return Err(if at > 12 {
+            format!("unexpected inner EtherType: 0x{ethertype:04X}")
+        } else {
+            format!("unexpected EtherType: 0x{ethertype:04X}")
+        });
+    }
+    Ok(&frame[at + 2..])
+}

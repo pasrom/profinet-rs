@@ -7,6 +7,8 @@
 //! trailer), exactly like the reference: the Ethernet header is prepended
 //! separately by [`build_ethernet_frame`].
 
+use crate::util::skip_vlan_tags;
+
 /// EtherType for PROFINET RT frames.
 pub const ETHERTYPE_PROFINET: u16 = 0x8892;
 
@@ -427,13 +429,21 @@ pub fn build_iocr_configs(
     (input_iocr, output_iocr)
 }
 
+/// 802.1Q priority tag for cyclic RT frames per IEC 61158-6-10: TPID 0x8100,
+/// PCP 6, VID 0 (TCI 0xC000, matching the negotiated IOCRTagHeader). RT frames
+/// are defined as priority-tagged: devices validate the negotiated priority,
+/// and managed switches may drop untagged sub-64-byte RT frames as runts.
+pub const VLAN_TAG_RT: [u8; 4] = [0x81, 0x00, 0xC0, 0x00];
+
 /// Build a complete Ethernet frame with RT payload, as
-/// `build_ethernet_frame`: dst_mac ++ src_mac ++ ethertype 0x8892 ++ frame.
+/// `build_ethernet_frame`: dst_mac ++ src_mac ++ VLAN tag ++ ethertype 0x8892
+/// ++ frame.
 pub fn build_ethernet_frame(dst_mac: &[u8; 6], src_mac: &[u8; 6], rt_frame: &RtFrame) -> Vec<u8> {
     let body = rt_frame.to_bytes();
-    let mut out = Vec::with_capacity(14 + body.len());
+    let mut out = Vec::with_capacity(18 + body.len());
     out.extend_from_slice(dst_mac);
     out.extend_from_slice(src_mac);
+    out.extend_from_slice(&VLAN_TAG_RT);
     out.extend_from_slice(&ETHERTYPE_PROFINET.to_be_bytes());
     out.extend_from_slice(&body);
     out
@@ -447,8 +457,14 @@ pub fn parse_ethernet_frame(data: &[u8]) -> Option<RtFrame> {
         // 14 (eth) + 4 (min RT)
         return None;
     }
-    if u16::from_be_bytes([data[12], data[13]]) != ETHERTYPE_PROFINET {
+    // RT frames are priority-tagged, including the ones build_ethernet_frame
+    // emits, so the EtherType is not at a fixed offset.
+    let eth_offset = skip_vlan_tags(data);
+    if data.len() < eth_offset + 2 {
         return None;
     }
-    RtFrame::from_bytes(&data[14..]).ok()
+    if u16::from_be_bytes([data[eth_offset], data[eth_offset + 1]]) != ETHERTYPE_PROFINET {
+        return None;
+    }
+    RtFrame::from_bytes(&data[eth_offset + 2..]).ok()
 }

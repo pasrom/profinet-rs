@@ -12,13 +12,14 @@
 //! The frame builder/parser and both Internet checksums are pure functions,
 //! unit-tested below; [`RawUdp`] just wires them to a live capture.
 
+use crate::util::skip_vlan_tags;
+
 use std::time::{Duration, Instant};
 
 use crate::pcap::RawSocket;
 
 /// EtherType for IPv4, the BPF filter installed on the capture.
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
-const ETHERTYPE_VLAN: u16 = 0x8100;
 const IP_PROTO_UDP: u8 = 17;
 
 /// One's-complement sum of `data` as big-endian 16-bit words (RFC 1071);
@@ -117,7 +118,7 @@ pub fn build_udp_frame(
 /// Extract `(udp_payload, udp_src_port)` from a captured Ethernet frame if it
 /// is an unfragmented IPv4/UDP datagram from `want_src_ip` to `want_dst_ip`;
 /// None for anything else (our own outgoing frames, other traffic, runts).
-/// One 802.1Q tag is skipped, the IP header is walked by its IHL (options
+/// Any number of 802.1Q tags is skipped, the IP header is walked by its IHL (options
 /// tolerated), and the payload is cut to the UDP length field so Ethernet
 /// minimum-frame padding is not returned.
 pub fn parse_udp_frame(
@@ -128,16 +129,13 @@ pub fn parse_udp_frame(
     if frame.len() < 14 {
         return None;
     }
-    let mut off = 12;
-    let mut ethertype = u16::from_be_bytes([frame[off], frame[off + 1]]);
-    if ethertype == ETHERTYPE_VLAN {
-        off += 4;
-        if frame.len() < off + 2 {
-            return None;
-        }
-        ethertype = u16::from_be_bytes([frame[off], frame[off + 1]]);
+    // Any number of VLAN tags may sit before the EtherType, the same as on the
+    // PROFINET paths.
+    let off = skip_vlan_tags(frame);
+    if frame.len() < off + 2 {
+        return None;
     }
-    if ethertype != ETHERTYPE_IPV4 {
+    if u16::from_be_bytes([frame[off], frame[off + 1]]) != ETHERTYPE_IPV4 {
         return None;
     }
 
