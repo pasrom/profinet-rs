@@ -594,10 +594,17 @@ fn parse_pral_alarm_item(data: &[u8], offset: usize) -> Result<(AlarmItem, usize
     ))
 }
 
+/// AlarmNotification body size in bytes (IEC 61158-6-10): AlarmType(2) +
+/// API(4) + SlotNumber(2) + SubslotNumber(2) + ModuleIdent(4) +
+/// SubmoduleIdent(4) + AlarmSpecifier(2). The block header (6) precedes it, so
+/// the item-less PDU is 26 bytes and BlockLength reads 22 (the bytes following
+/// the BlockLength field).
+const ALARM_BODY_LEN: usize = 20;
+
 /// Parse a complete AlarmNotification PDU (`parse_alarm_notification`).
 pub fn parse_alarm_notification(data: &[u8]) -> Result<AlarmNotification, String> {
-    // Minimum: BlockHeader(6) + Body(22).
-    if data.len() < 28 {
+    // Minimum: BlockHeader(6) + Body(20).
+    if data.len() < 6 + ALARM_BODY_LEN {
         return Err("AlarmNotification too short".to_string());
     }
 
@@ -605,6 +612,17 @@ pub fn parse_alarm_notification(data: &[u8]) -> Result<AlarmNotification, String
     let block_type = u16_at(data, 0);
     let ver_high = data[4];
     let ver_low = data[5];
+
+    // BlockLength counts the bytes following the BlockLength field, so the
+    // block ends at 4 + block_length. Anything past that is not part of the
+    // alarm: senders pad short frames to the 60-byte Ethernet minimum, and
+    // parsing that padding yields phantom items with USI 0x0000.
+    let block_end = 4 + u16_at(data, 2) as usize;
+    let data = if 6 + ALARM_BODY_LEN <= block_end && block_end < data.len() {
+        &data[..block_end]
+    } else {
+        data
+    };
 
     // PDU body.
     let alarm_type = u16_at(data, 6);
@@ -614,7 +632,7 @@ pub fn parse_alarm_notification(data: &[u8]) -> Result<AlarmNotification, String
     let module_ident = u32_at(data, 16);
     let submodule_ident = u32_at(data, 20);
     let alarm_specifier = u16_at(data, 24);
-    let offset = 28;
+    let offset = 6 + ALARM_BODY_LEN;
 
     // AlarmSpecifier bits.
     let mut notification = AlarmNotification {
@@ -630,7 +648,8 @@ pub fn parse_alarm_notification(data: &[u8]) -> Result<AlarmNotification, String
         channel_diagnosis: alarm_specifier & 0x0800 != 0,
         manufacturer_specific: alarm_specifier & 0x1000 != 0,
         submodule_diagnosis_state: alarm_specifier & 0x2000 != 0,
-        ar_diagnosis_state: alarm_specifier & 0x4000 != 0,
+        // Bit 15; bit 14 is reserved.
+        ar_diagnosis_state: alarm_specifier & 0x8000 != 0,
         items: Vec::new(),
         raw_payload: data[offset..].to_vec(),
     };
