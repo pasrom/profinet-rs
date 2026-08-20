@@ -57,6 +57,7 @@ const CM_STATION_NAME: &[u8] = b"tp";
 #[command(
     name = "profinet",
     about = "PROFINET IO-Controller CLI",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")"),
     after_help = "https://github.com/f0rw4rd/profinet-py"
 )]
 struct Cli {
@@ -1403,6 +1404,11 @@ struct Hello<'a> {
     proto: u32,
     #[serde(rename = "type")]
     tag: Tag,
+    /// Crate version of this binary. Two builds can speak the same protocol
+    /// and still decode, retry or pace differently, so a consumer that records
+    /// measurements needs to know which one produced them — after the fact,
+    /// not just while it is running.
+    version: &'static str,
     station: &'a str,
     read_only: bool,
     gap_ms: u64,
@@ -1433,6 +1439,7 @@ fn hello_line(station: &str, read_only: bool, gap_ms: u64, cyclic: bool, allow_m
     json_line(&Hello {
         proto: SERVE_PROTO,
         tag: Tag::Hello,
+        version: env!("CARGO_PKG_VERSION"),
         station,
         read_only,
         gap_ms,
@@ -4088,7 +4095,10 @@ mod tests {
         // Session framing.
         assert_eq!(
             hello_line("demo", true, 30, false, 6),
-            r#"{"proto":5,"type":"hello","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}"#
+            format!(
+                r#"{{"proto":5,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
+                env!("CARGO_PKG_VERSION")
+            )
         );
         assert_eq!(stopped_exit_line(0), r#"{"type":"stopped","exit":0}"#);
         assert_eq!(
