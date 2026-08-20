@@ -823,3 +823,112 @@ fn rx_jitter_skips_interval_after_timeout() {
     ctrl.process_input_frame(&build_input_eth_frame(&ctrl, 3, None, None));
     assert_eq!(ctrl.stats().rx_interval_count, 1); // the post-timeout gap is skipped
 }
+
+// ---------------------------------------------------------------------------
+// IOPS gating: a device disowns its input data without dropping the AR
+// ---------------------------------------------------------------------------
+
+/// One data object's payload: four data bytes, then its IOPS byte at the
+/// configured iops_offset, padded to the frame length.
+fn payload_with_iops(data: [u8; 4], iops: u8) -> Vec<u8> {
+    let mut payload = data.to_vec();
+    payload.push(iops);
+    payload.extend_from_slice(&[0u8; 35]);
+    payload
+}
+
+fn feed(ctrl: &CyclicController, cycle: u16, data: [u8; 4], iops: u8) {
+    ctrl.process_input_frame(&build_input_eth_frame(
+        ctrl,
+        cycle,
+        Some(payload_with_iops(data, iops)),
+        None,
+    ));
+}
+
+#[test]
+fn input_data_marked_bad_is_withheld() {
+    let ctrl = make_controller();
+    ctrl.transition(CyclicState::Running);
+
+    feed(&ctrl, 1, [0x01, 0x02, 0x03, 0x04], 0x80);
+    assert_eq!(
+        ctrl.get_input_data(1, 1),
+        Some(vec![0x01, 0x02, 0x03, 0x04])
+    );
+
+    // The device keeps sending the same bytes but disowns them. Handing them
+    // to the application as if they were live readings is the bug.
+    feed(&ctrl, 2, [0x01, 0x02, 0x03, 0x04], 0x00);
+    assert_eq!(ctrl.get_input_data(1, 1), None);
+    assert!(!ctrl.is_input_good(1, 1));
+    assert_eq!(ctrl.get_input_status(1, 1), Some(0x00));
+    // Deliberately asking for it anyway still works.
+    assert_eq!(
+        ctrl.get_input_data_allow_bad(1, 1),
+        Some(vec![0x01, 0x02, 0x03, 0x04])
+    );
+}
+
+#[test]
+fn a_good_iops_with_extension_bits_stays_good() {
+    // DataState is bit 7; the lower bits carry Instance and Extension. A
+    // received IOxS has to be masked, not compared against IOXS_GOOD.
+    let ctrl = make_controller();
+    ctrl.transition(CyclicState::Running);
+    feed(&ctrl, 1, [0xAA, 0xBB, 0xCC, 0xDD], 0x81);
+    assert!(ctrl.is_input_good(1, 1));
+    assert_eq!(
+        ctrl.get_input_data(1, 1),
+        Some(vec![0xAA, 0xBB, 0xCC, 0xDD])
+    );
+}
+
+#[test]
+fn nothing_received_yet_is_not_good() {
+    let ctrl = make_controller();
+    assert!(!ctrl.is_input_good(1, 1));
+    assert_eq!(ctrl.get_input_status(1, 1), None);
+}
+
+#[test]
+fn the_status_callback_fires_only_on_transitions() {
+    let ctrl = make_controller();
+    ctrl.transition(CyclicState::Running);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    ctrl.on_input_status(move |slot, subslot, iops| {
+        sink.lock().unwrap().push((slot, subslot, iops))
+    });
+
+    feed(&ctrl, 1, [0x01, 0x02, 0x03, 0x04], 0x80); // first GOOD: a transition
+    feed(&ctrl, 2, [0x01, 0x02, 0x03, 0x04], 0x80); // still GOOD: silent
+    feed(&ctrl, 3, [0x01, 0x02, 0x03, 0x04], 0x00); // GOOD -> BAD
+    feed(&ctrl, 4, [0x01, 0x02, 0x03, 0x04], 0x00); // still BAD: silent
+    feed(&ctrl, 5, [0x01, 0x02, 0x03, 0x04], 0x80); // BAD -> GOOD
+
+    let events = seen.lock().unwrap();
+    assert_eq!(
+        *events,
+        vec![(1, 1, 0x80), (1, 1, 0x00), (1, 1, 0x80)],
+        "one event per transition, none for repeats"
+    );
+}
+
+#[test]
+fn the_data_callback_is_silent_while_the_device_marks_it_bad() {
+    let ctrl = make_controller();
+    ctrl.transition(CyclicState::Running);
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&seen);
+    ctrl.on_input(move |slot, subslot, data| {
+        sink.lock().unwrap().push((slot, subslot, data.to_vec()))
+    });
+
+    feed(&ctrl, 1, [0x01, 0x02, 0x03, 0x04], 0x80);
+    feed(&ctrl, 2, [0x05, 0x06, 0x07, 0x08], 0x00);
+
+    let events = seen.lock().unwrap();
+    assert_eq!(events.len(), 1, "the BAD frame must not be delivered");
+    assert_eq!(events[0], (1, 1, vec![0x01, 0x02, 0x03, 0x04]));
+}
