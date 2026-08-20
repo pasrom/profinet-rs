@@ -20,15 +20,15 @@ clap = { version = "4", features = ["derive"] }
 # (plain `kill`, a supervisor, `timeout`): without it those signals kill the
 # process outright and would strand a held output bit.
 ctrlc = { version = "3", features = ["termination"] }
-getrandom = "0.3"
+getrandom = "0.4"
 mac_address = "1"
 pcap = "2"
-roxmltree = "0.20"
+roxmltree = "0.21"
 # The `serve` line protocol is serialised from types, not assembled from format
 # strings, so field names and shapes are checked by the compiler.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-socket2 = "0.5"
+socket2 = "0.6"
 
 [dev-dependencies]
 hex = "0.4"
