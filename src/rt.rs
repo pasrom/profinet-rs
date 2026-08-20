@@ -38,6 +38,10 @@ pub const DATA_STATUS_IGNORE: u8 = 0x80; // 1=Ignore frame
 
 /// IOxS (Provider/Consumer Status) values.
 pub const IOXS_GOOD: u8 = 0x80; // Good data, subslot level
+/// DataState is bit 7 of an IOxS byte; the lower bits carry Instance and
+/// Extension, so a *received* IOxS must be masked with this rather than
+/// compared against [`IOXS_GOOD`].
+pub const IOXS_DATA_STATE_GOOD: u8 = 0x80;
 pub const IOXS_BAD: u8 = 0x00; // Bad data
 pub const IOXS_EXTENSION: u8 = 0x01; // More IOxS follows
 

@@ -36,7 +36,7 @@ use crate::pcap::RawSocket;
 use crate::rt::{
     build_ethernet_frame, parse_ethernet_frame, CyclicDataBuilder, IocrConfig, RtFrame,
     DATA_STATUS_PROVIDER_RUN, DATA_STATUS_STATE, DATA_STATUS_STATION_OK, DATA_STATUS_VALID,
-    ETHERTYPE_PROFINET, IOXS_BAD, IOXS_GOOD,
+    ETHERTYPE_PROFINET, IOXS_BAD, IOXS_DATA_STATE_GOOD, IOXS_GOOD,
 };
 
 /// Default number of consecutive watchdog timeouts before FAULT.
@@ -225,10 +225,27 @@ type InputCallback = Box<dyn Fn(u16, u16, &[u8]) + Send>;
 type TimeoutCallback = Box<dyn Fn() + Send>;
 type ErrorCallback = Box<dyn Fn(&str) + Send>;
 type StateChangeCallback = Box<dyn Fn(CyclicState, CyclicState) + Send>;
+type InputStatusCallback = Box<dyn Fn(u16, u16, u8) + Send>;
+
+/// Latest input payload for a submodule together with the provider status
+/// (IOPS) the device sent alongside it. Both live under one lock: the payload
+/// only means anything while its own IOPS reports GOOD, so they must never be
+/// read from different moments in time.
+struct InputEntry {
+    data: Vec<u8>,
+    iops: u8,
+}
+
+impl InputEntry {
+    fn is_good(&self) -> bool {
+        self.iops & IOXS_DATA_STATE_GOOD != 0
+    }
+}
 
 #[derive(Default)]
 struct Callbacks {
     on_input_data: Option<InputCallback>,
+    on_input_status: Option<InputStatusCallback>,
     on_timeout: Option<TimeoutCallback>,
     on_error: Option<ErrorCallback>,
     on_state_change: Option<StateChangeCallback>,
@@ -245,7 +262,7 @@ struct Shared {
     running: AtomicBool,
     cycle_counter: Mutex<u16>,
     output_builder: Mutex<CyclicDataBuilder>,
-    input_data: Mutex<HashMap<(u16, u16), Vec<u8>>>,
+    input_data: Mutex<HashMap<(u16, u16), InputEntry>>,
     last_rx_cycle_counter: Mutex<Option<u16>>,
     /// RX cycle-counter step: per IEC 61158-6-10 the counter increments by
     /// send_clock_factor * reduction_ratio per frame.
@@ -389,23 +406,50 @@ impl Shared {
         // Set IOCS to GOOD - we received valid input data
         plock(&self.output_builder).set_all_iocs(IOXS_GOOD);
 
-        // Extract data per IO object; callbacks fire after the input lock is
-        // released (the reference calls them under the lock, which the GIL
-        // makes safe; here that would deadlock a callback reading input).
+        // Extract data per IO object. Each submodule's payload is followed by
+        // its IOPS byte; the device sets it BAD to disown data it is still
+        // sending, so the payload is only usable while IOPS reports GOOD.
+        //
+        // Callbacks fire after the input lock is released (the reference calls
+        // them under the lock, which the GIL makes safe; here that would
+        // deadlock a callback reading input).
         let mut updates = Vec::new();
+        let mut status_changes = Vec::new();
         {
             let mut input_data = plock(&self.input_data);
             for obj in &self.input_iocr.objects {
-                if obj.frame_offset + obj.data_length <= frame.payload.len() {
-                    let obj_data = frame.payload
-                        [obj.frame_offset..obj.frame_offset + obj.data_length]
-                        .to_vec();
-                    input_data.insert((obj.slot, obj.subslot), obj_data.clone());
+                if obj.iops_offset >= frame.payload.len()
+                    || obj.frame_offset + obj.data_length > frame.payload.len()
+                {
+                    continue;
+                }
+                let iops = frame.payload[obj.iops_offset];
+                let key = (obj.slot, obj.subslot);
+                let was_good = input_data.get(&key).is_some_and(InputEntry::is_good);
+                let is_good = iops & IOXS_DATA_STATE_GOOD != 0;
+                let obj_data =
+                    frame.payload[obj.frame_offset..obj.frame_offset + obj.data_length].to_vec();
+                input_data.insert(
+                    key,
+                    InputEntry {
+                        data: obj_data.clone(),
+                        iops,
+                    },
+                );
+                if is_good != was_good {
+                    status_changes.push((obj.slot, obj.subslot, iops));
+                }
+                if is_good {
                     updates.push((obj.slot, obj.subslot, obj_data));
                 }
             }
         }
         let callbacks = plock(&self.callbacks);
+        if let Some(cb) = &callbacks.on_input_status {
+            for (slot, subslot, iops) in &status_changes {
+                cb(*slot, *subslot, *iops);
+            }
+        }
         if let Some(cb) = &callbacks.on_input_data {
             for (slot, subslot, obj_data) in &updates {
                 cb(*slot, *subslot, obj_data);
@@ -747,18 +791,55 @@ impl CyclicController {
         Ok(())
     }
 
-    /// Latest input data from the device for a slot/subslot, or None if not
-    /// received yet.
+    /// Latest input data from the device for a slot/subslot, or None if
+    /// nothing was received yet or the device marked the payload BAD.
+    ///
+    /// Data whose IOPS is BAD must not be used: the device is saying the
+    /// payload is not valid (module pulled, sensor faulted) while still
+    /// sending the stale bytes. Use [`Self::get_input_data_allow_bad`] to see
+    /// them anyway, or [`Self::get_input_status`] for the raw IOPS.
     pub fn get_input_data(&self, slot: u16, subslot: u16) -> Option<Vec<u8>> {
         plock(&self.shared.input_data)
             .get(&(slot, subslot))
-            .cloned()
+            .filter(|entry| entry.is_good())
+            .map(|entry| entry.data.clone())
+    }
+
+    /// Latest input data regardless of the provider status.
+    pub fn get_input_data_allow_bad(&self, slot: u16, subslot: u16) -> Option<Vec<u8>> {
+        plock(&self.shared.input_data)
+            .get(&(slot, subslot))
+            .map(|entry| entry.data.clone())
+    }
+
+    /// Raw provider status (IOPS) the device sent for a submodule (0x80 =
+    /// GOOD), or None if nothing was received yet.
+    pub fn get_input_status(&self, slot: u16, subslot: u16) -> Option<u8> {
+        plock(&self.shared.input_data)
+            .get(&(slot, subslot))
+            .map(|entry| entry.iops)
+    }
+
+    /// Whether the device currently reports GOOD provider status.
+    pub fn is_input_good(&self, slot: u16, subslot: u16) -> bool {
+        plock(&self.shared.input_data)
+            .get(&(slot, subslot))
+            .is_some_and(InputEntry::is_good)
     }
 
     /// Register the callback for input data updates, invoked from the RX
     /// thread as `callback(slot, subslot, data)` per received data object.
     pub fn on_input<F: Fn(u16, u16, &[u8]) + Send + 'static>(&self, callback: F) {
         plock(&self.shared.callbacks).on_input_data = Some(Box::new(callback));
+    }
+
+    /// Register the callback for provider-status (IOPS) transitions, invoked
+    /// from the RX thread as `callback(slot, subslot, iops)` whenever a
+    /// submodule flips between GOOD and BAD. That is how a device disowns its
+    /// input data without dropping the AR — the frames keep arriving with
+    /// stale payload — so this is the only notification there is.
+    pub fn on_input_status<F: Fn(u16, u16, u8) + Send + 'static>(&self, callback: F) {
+        plock(&self.shared.callbacks).on_input_status = Some(Box::new(callback));
     }
 
     /// Register the callback for watchdog timeouts.
