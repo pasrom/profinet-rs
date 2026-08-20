@@ -60,9 +60,10 @@ const CM_STATION_NAME: &[u8] = b"tp";
     after_help = "https://github.com/f0rw4rd/profinet-py"
 )]
 struct Cli {
-    /// Network interface to use.
+    /// Network interface to use. Required by every command that touches the
+    /// network, which is all of them except `proto`.
     #[arg(short, long, value_name = "IFACE")]
-    interface: String,
+    interface: Option<String>,
 
     /// Enable verbose output.
     #[arg(short, long)]
@@ -3058,7 +3059,13 @@ fn safe_shutdown(
 }
 
 fn run(cli: &Cli) -> Result<i32, String> {
-    let iface = cli.interface.as_str();
+    // Every command below talks to the network, so the interface is resolved
+    // once here rather than per arm. A command that does not need one is
+    // dispatched before this point.
+    let iface = cli
+        .interface
+        .as_deref()
+        .ok_or("--interface <IFACE> is required for this command")?;
     let timeout = Duration::from_secs(cli.timeout);
     // The DCP commands need the controller MAC; look it up once up front.
     match &cli.command {
@@ -3222,14 +3229,19 @@ mod tests {
     }
 
     #[test]
-    fn interface_is_required() {
-        assert!(Cli::try_parse_from(["profinet", "discover"]).is_err());
+    fn interface_is_required_by_the_commands_that_use_it() {
+        // It parses now — the requirement moved from clap into run(), so a
+        // command that needs no interface can exist at all.
+        let cli = parse(&["profinet", "discover"]);
+        assert!(cli.interface.is_none());
+        let err = run(&cli).expect_err("discover without an interface must fail");
+        assert!(err.contains("--interface"), "unhelpful error: {err}");
     }
 
     #[test]
     fn discover_defaults() {
         let cli = parse(&["profinet", "-i", "en0", "discover"]);
-        assert_eq!(cli.interface, "en0");
+        assert_eq!(cli.interface.as_deref(), Some("en0"));
         assert_eq!(cli.timeout, 10);
         assert!(matches!(cli.command, Command::Discover));
     }
