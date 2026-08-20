@@ -87,6 +87,15 @@ enum Param {
     Ip,
 }
 
+/// Parameters a Set may carry. The IP suite is deliberately absent: it is 12
+/// binary bytes (address, mask, gateway), so sending it as the ASCII string a
+/// generic Set builds fails the device's length check and is never applied —
+/// while the command reports success. `set-ip` builds the binary form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum SettableParam {
+    Name,
+}
+
 /// Reset mode for the reset command (argparse `choices`, default factory).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum ResetMode {
@@ -138,16 +147,19 @@ enum Command {
         param: Param,
     },
 
-    /// Write device parameter.
+    /// Write device parameter. Use `set-ip` for the IP address.
     SetParam {
         /// Device MAC address (e.g. aa:bb:cc:dd:ee:ff).
         #[arg(value_name = "MAC")]
         target: String,
         /// Parameter to write.
         #[arg(value_enum)]
-        param: Param,
+        param: SettableParam,
         /// New value.
         value: String,
+        /// Ask the device to keep the value across a power cycle.
+        #[arg(long)]
+        permanent: bool,
     },
 
     /// Read data record.
@@ -479,42 +491,33 @@ fn cmd_set_param(
     iface: &str,
     my_mac: &[u8; 6],
     target: &str,
-    param: Param,
+    param: SettableParam,
     value: &str,
+    permanent: bool,
 ) -> Result<i32, String> {
     let dst = s2mac(target)?;
-    if param == Param::Name && value.len() > dcp::DCP_MAX_NAME_LENGTH {
+    if value.len() > dcp::DCP_MAX_NAME_LENGTH {
         return Err(format!(
             "Station name exceeds maximum length: {} > {}",
             value.len(),
             dcp::DCP_MAX_NAME_LENGTH
         ));
     }
-    let (option, suboption) = match param {
-        Param::Name => (dcp::DCP_OPTION_DEVICE, dcp::DCP_SUBOPTION_DEVICE_NAME),
-        Param::Ip => (dcp::DCP_OPTION_IP, dcp::DCP_SUBOPTION_IP_PARAMETER),
-    };
-    let request = dcp::set_param_request(
-        my_mac,
-        &dst,
-        gen_xid()?,
-        option,
-        suboption,
-        value.as_bytes(),
-    );
+    let SettableParam::Name = param;
+    let request = dcp::set_name_request_qualified(my_mac, &dst, gen_xid()?, value, permanent);
 
     match dcp_set_roundtrip(iface, my_mac, &request, Duration::from_secs(5)) {
         Ok(dcp::DCP_BLOCK_ERROR_OK) => {
-            println!("Set {} = {value}", param_name(param));
+            println!("Set {} = {value}", settable_param_name(param));
             Ok(0)
         }
         Ok(code) => Err(format!(
             "DCP SET failed for '{}': {}",
-            param_name(param),
+            settable_param_name(param),
             dcp::block_error_name(code)
         )),
         Err(_) => {
-            println!("Failed to set {}", param_name(param));
+            println!("Failed to set {}", settable_param_name(param));
             Ok(1)
         }
     }
@@ -1013,6 +1016,12 @@ fn cmd_cyclic(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn settable_param_name(param: SettableParam) -> &'static str {
+    match param {
+        SettableParam::Name => "name",
+    }
+}
 
 fn param_name(param: Param) -> &'static str {
     match param {
@@ -3012,9 +3021,10 @@ fn run(cli: &Cli) -> Result<i32, String> {
             target,
             param,
             value,
+            permanent,
         } => {
             let my_mac = pcap::get_mac(iface)?;
-            cmd_set_param(iface, &my_mac, target, *param, value)
+            cmd_set_param(iface, &my_mac, target, *param, value, *permanent)
         }
         Command::Read {
             target,

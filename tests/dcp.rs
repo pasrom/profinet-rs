@@ -3,7 +3,8 @@
 //! reference (tools/gen_golden.py -> tests/golden/foundation.json).
 
 use profinet_rs::dcp::{
-    identify_all_request, parse_identify_response, set_ip_request, set_name_request, DcpDevice,
+    identify_all_request, parse_identify_response, set_ip_request, set_name_request,
+    set_name_request_qualified, DcpDevice,
 };
 
 const SRC_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -719,5 +720,39 @@ mod py_parity_constants {
         assert_eq!((DCP_OPTION_DEVICE, DCP_SUBOPTION_DEVICE_ALIAS), (2, 6));
         assert_eq!((DCP_OPTION_DEVICE, DCP_SUBOPTION_DEVICE_INSTANCE), (2, 7));
         assert_eq!(DCP_OPTION_ALL, 0xFF);
+    }
+}
+
+#[test]
+fn golden_set_name_request_permanent() {
+    // BlockQualifier bit 0 asks the device to keep the name across a power
+    // cycle; without it the name is temporary.
+    assert_eq!(
+        hex::encode(set_name_request_qualified(
+            &SRC_MAC, &DST_MAC, XID, "device", true
+        )),
+        golden_hex("dcp_set_name_request_permanent")
+    );
+}
+
+#[test]
+fn dcp_data_length_matches_the_bytes_actually_sent() {
+    // DCPDataLength counts the pad byte an odd-length block carries. Declaring
+    // it without appending it left the frame one byte shorter than announced,
+    // which a device is entitled to reject — and this is the case that hits
+    // every station name with an odd number of characters.
+    for name in ["device", "plc-1", "a", "ab"] {
+        let frame = set_name_request(&SRC_MAC, &DST_MAC, XID, name);
+        // Ethernet(14) + frame id(2) + service id(1) + type(1) + xid(4)
+        // + reserved(2) = 24, then the 2-byte DCPDataLength.
+        let declared = u16::from_be_bytes([frame[24], frame[25]]) as usize;
+        assert_eq!(
+            declared,
+            frame.len() - 26,
+            "name {name:?}: DCPDataLength {declared} but {} bytes follow",
+            frame.len() - 26
+        );
+        // Odd values are padded to an even block length.
+        assert_eq!(declared % 2, 0, "name {name:?}: block length must be even");
     }
 }

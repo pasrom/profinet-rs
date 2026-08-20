@@ -160,10 +160,8 @@ pub fn identify_all_request(src_mac: &[u8; 6], xid: u32) -> Vec<u8> {
 }
 
 /// Set request frame as built by dcp.py set_param/set_ip: one block whose
-/// payload is a 2-byte qualifier followed by the value.
-///
-/// Reference quirk preserved as-is: for odd-length values the DCP header
-/// length field counts a pad byte that is never actually appended.
+/// payload is a 2-byte qualifier followed by the value. An odd-length value is
+/// followed by a pad byte, which DCPDataLength counts.
 fn set_request(
     src_mac: &[u8; 6],
     dst_mac: &[u8; 6],
@@ -177,15 +175,20 @@ fn set_request(
     payload.extend_from_slice(&qualifier.to_be_bytes());
     payload.extend_from_slice(value);
 
-    let block = block_request(option, suboption, (value.len() + 2) as u16, &payload);
-    let padding = value.len() % 2;
+    let mut block = block_request(option, suboption, (value.len() + 2) as u16, &payload);
+    // An odd-length value is followed by a pad byte, and DCPDataLength counts
+    // it. Declaring the pad without appending it leaves the frame one byte
+    // shorter than announced, which a device is right to reject.
+    if value.len() % 2 == 1 {
+        block.push(0x00);
+    }
     let dcp = dcp_header(
         DCP_GET_SET_FRAME_ID,
         DCP_SERVICE_ID_SET,
         DCP_SERVICE_TYPE_REQUEST,
         xid,
         0,
-        (value.len() + 6 + padding) as u16,
+        block.len() as u16,
         &block,
     );
     eth_frame(dst_mac, src_mac, PROFINET_ETHERTYPE, &dcp)
@@ -194,13 +197,27 @@ fn set_request(
 /// Set Name-of-Station request as built by dcp.py set_param("name", ...):
 /// Device/Name block, temporary qualifier 0x0000, ASCII name.
 pub fn set_name_request(src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32, name: &str) -> Vec<u8> {
+    set_name_request_qualified(src_mac, dst_mac, xid, name, false)
+}
+
+/// Set Name-of-Station with an explicit permanence qualifier (dcp.py
+/// `set_param(..., permanent=)`): bit 0 of the BlockQualifier asks the device
+/// to store the name across a power cycle. [`set_name_request`] is the
+/// temporary shorthand.
+pub fn set_name_request_qualified(
+    src_mac: &[u8; 6],
+    dst_mac: &[u8; 6],
+    xid: u32,
+    name: &str,
+    permanent: bool,
+) -> Vec<u8> {
     set_request(
         src_mac,
         dst_mac,
         xid,
         DCP_OPTION_DEVICE,
         DCP_SUBOPTION_DEVICE_NAME,
-        0x0000,
+        if permanent { 0x0001 } else { 0x0000 },
         name.as_bytes(),
     )
 }
