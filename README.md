@@ -60,7 +60,7 @@ its outputs**. Whatever those outputs are wired to, it will drive them.
 
 Tagged versions publish a binary for linux-x86_64, macos-arm64 and
 windows-x86_64. Each asset name carries the serve protocol it speaks, e.g.
-`profinet-linux-x86_64-v0.2.0-proto1`, so a consumer can pick a build it can
+`profinet-linux-x86_64-v0.1.0-proto5`, so a consumer can pick a build it can
 actually talk to before downloading it.
 
 Every asset is published with signed build provenance. To check that a file
@@ -68,8 +68,12 @@ really came out of this repository's workflow rather than from whoever handed
 it to you:
 
 ```sh
-gh attestation verify profinet-linux-x86_64-v0.2.0-proto1 --repo pasrom/profinet-rs
+gh attestation verify profinet-linux-x86_64-v0.1.0-proto5 --repo pasrom/profinet-rs
 ```
+
+`v0.1.0` predates the provenance being added, so verifying its assets reports
+a 404 rather than a bad signature — that is the absence of an attestation, not
+a failed one.
 
 ## Build
 
