@@ -63,8 +63,13 @@ const CM_STATION_NAME: &[u8] = b"tp";
 )]
 struct Cli {
     /// Network interface to use. Required by every command that touches the
-    /// network, which is all of them except `proto`.
-    #[arg(short, long, value_name = "IFACE")]
+    /// network, which is all of them except `proto` and `capture-check`.
+    ///
+    /// `global`, so it is accepted before or after the subcommand. A consumer
+    /// that writes `capture-check --interface en0` is not making a mistake
+    /// worth an error, and a clap usage error is easy to misread as "this
+    /// helper is too old".
+    #[arg(short, long, value_name = "IFACE", global = true)]
     interface: Option<String>,
 
     /// Enable verbose output.
