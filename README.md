@@ -96,6 +96,9 @@ profinet -i en0 read-inm0 <station>
 profinet -i en0 read  <station> --index 4660 --slot 1 --subslot 1 --length 8
 profinet -i en0 write <station> --index 4661 --slot 1 --subslot 1 --data 01
 
+# Can this machine capture at all? (answers by trying; no interface needed)
+profinet capture-check
+
 # Assign a station address over DCP
 profinet -i en0 set-ip <mac> 192.168.0.2 255.255.255.0 0.0.0.0
 

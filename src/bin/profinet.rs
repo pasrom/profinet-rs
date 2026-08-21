@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 
+use profinet_rs::capture_check;
 use profinet_rs::connect::IocrSetup;
 use profinet_rs::cyclic::{CyclicController, CyclicState};
 use profinet_rs::dcp;
@@ -144,6 +145,17 @@ enum Command {
     /// only emitted once an AR to a device is up.
     Proto,
 
+    /// Report whether this binary can open a capture handle on this machine.
+    ///
+    /// Answered by trying, not by inferring: whether it works depends on this
+    /// executable's own file capabilities, the set it inherited, and on Windows
+    /// whether its `wpcap.dll` resolved — none of which a consumer can see. The
+    /// verdict names the failure, because a driver to install, a permission to
+    /// grant and a program to close are three different fixes.
+    ///
+    /// `--interface` is optional: privilege is not per interface, so without one
+    /// the first non-loopback interface is used and reported back.
+    CaptureCheck,
     /// Discover PROFINET devices.
     Discover,
 
@@ -1425,6 +1437,31 @@ struct Proto {
     proto: u32,
     version: &'static str,
     git: &'static str,
+}
+
+/// `{"capture":"…","iface":"…","detail":"…"}` — the answer to `capture-check`.
+///
+/// Flat and one line, like every other thing this binary prints, so the same
+/// reader handles it. `iface` is what was actually tried, which is not
+/// necessarily what was asked for.
+#[derive(Serialize)]
+struct Capture<'a> {
+    capture: &'a str,
+    iface: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<&'a str>,
+}
+
+fn capture_line(verdict: &capture_check::Readiness, iface: Option<&str>) -> String {
+    let detail = match verdict {
+        capture_check::Readiness::Unknown(msg) => Some(msg.as_str()),
+        _ => None,
+    };
+    json_line(&Capture {
+        capture: verdict.as_str(),
+        iface,
+        detail,
+    })
 }
 
 fn proto_line() -> String {
@@ -3100,6 +3137,16 @@ fn run(cli: &Cli) -> Result<i32, String> {
         return Ok(0);
     }
 
+    // Also before the interface guard: the point of this command is to answer
+    // on a machine that cannot capture yet, and an interface is optional.
+    if matches!(cli.command, Command::CaptureCheck) {
+        let (verdict, tried) = capture_check::check(cli.interface.as_deref());
+        println!("{}", capture_line(&verdict, tried.as_deref()));
+        // Exit 0 either way: the answer is the output, and a non-zero exit here
+        // would be indistinguishable from "this binary could not run".
+        return Ok(0);
+    }
+
     // Every command below talks to the network, so the interface is resolved
     // once here rather than per arm. A command that does not need one is
     // dispatched before this point.
@@ -3110,9 +3157,9 @@ fn run(cli: &Cli) -> Result<i32, String> {
     let timeout = Duration::from_secs(cli.timeout);
     // The DCP commands need the controller MAC; look it up once up front.
     match &cli.command {
-        // Dispatched above, before the interface guard; this arm exists only to
-        // keep the match exhaustive.
-        Command::Proto => Ok(0),
+        // Dispatched above, before the interface guard; these arms exist only
+        // to keep the match exhaustive.
+        Command::Proto | Command::CaptureCheck => Ok(0),
         Command::Discover => cmd_discover(iface, timeout),
         Command::GetParam { target, param } => {
             let my_mac = pcap::get_mac(iface)?;
@@ -4066,6 +4113,24 @@ mod tests {
                 env!("CARGO_PKG_VERSION"),
                 env!("GIT_HASH")
             )
+        );
+
+        // Also an answer about the machine rather than an event. `detail` is
+        // omitted unless the verdict carries one, so both shapes are pinned.
+        assert_eq!(
+            capture_line(&capture_check::Readiness::Ready, Some("en8")),
+            r#"{"capture":"ready","iface":"en8"}"#
+        );
+        assert_eq!(
+            capture_line(&capture_check::Readiness::NoPermission, None),
+            r#"{"capture":"no_permission","iface":null}"#
+        );
+        assert_eq!(
+            capture_line(
+                &capture_check::Readiness::Unknown("odd".into()),
+                Some("en8")
+            ),
+            r#"{"capture":"unknown","iface":"en8","detail":"odd"}"#
         );
 
         // Answers to a request, all id-first.

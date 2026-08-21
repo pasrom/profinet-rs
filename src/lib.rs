@@ -13,6 +13,7 @@
 pub mod alarm_listener;
 pub mod alarms;
 pub mod blocks;
+pub mod capture_check;
 pub mod connect;
 pub mod cyclic;
 pub mod dcp;
