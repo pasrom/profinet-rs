@@ -12,21 +12,6 @@
 //! So the check is a real attempt, and the verdict says which of the distinct
 //! failures happened, because they have different fixes.
 
-use std::io::ErrorKind;
-
-/// Errno values used to tell the failures apart. Same numbers on Linux and
-/// macOS, and the only ones this needs; `std` maps `EACCES`/`EPERM` to
-/// [`ErrorKind::PermissionDenied`], but has no stable mapping for the other two
-/// across the versions this builds on.
-const EBUSY: i32 = 16;
-const ENOENT: i32 = 2;
-
-/// How many `/dev/bpf*` nodes to try before concluding there are no more.
-///
-/// macOS creates them on demand, so a gap means "that is all there is". The
-/// scan stops at the first `ENOENT` anyway; this is only the backstop.
-const BPF_SCAN_LIMIT: u32 = 256;
-
 /// What a capture attempt found. Distinct variants because the fixes differ:
 /// a driver to install, a permission to grant, a program to close, a name to
 /// correct.
@@ -104,34 +89,55 @@ pub fn fold_bpf_scan(opened_any: bool, denied: bool, busy: bool) -> Option<Readi
 
 /// Try to open `/dev/bpf*` directly, for the raw errno libpcap hides.
 ///
-/// Only macOS and the BSDs have these; elsewhere this reports nothing and the
-/// pcap attempt is the whole answer.
+/// Only macOS and the BSDs have these nodes, and everything the scan needs lives
+/// inside the platform branch. A constant declared outside it is unused on
+/// Linux, which `-D warnings` turns into a build failure that no amount of local
+/// checking on a Mac will show.
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
-fn scan_bpf() -> Option<Readiness> {
-    let (mut opened_any, mut denied, mut busy) = (false, false, false);
-    for n in 0..BPF_SCAN_LIMIT {
-        match std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(format!("/dev/bpf{n}"))
-        {
-            Ok(_) => {
-                opened_any = true;
-                break;
+mod bpf {
+    use super::{fold_bpf_scan, Readiness};
+    use std::io::ErrorKind;
+
+    /// Errno values that tell the failures apart. `std` maps `EACCES` and
+    /// `EPERM` to [`ErrorKind::PermissionDenied`], but has no stable mapping for
+    /// these two across the versions this builds on.
+    const EBUSY: i32 = 16;
+    const ENOENT: i32 = 2;
+
+    /// How many nodes to try before concluding there are no more. macOS creates
+    /// them on demand, so a gap means "that is all there is"; the scan stops at
+    /// the first `ENOENT` anyway, and this is only the backstop.
+    const SCAN_LIMIT: u32 = 256;
+
+    pub(super) fn scan() -> Option<Readiness> {
+        let (mut opened_any, mut denied, mut busy) = (false, false, false);
+        for n in 0..SCAN_LIMIT {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(format!("/dev/bpf{n}"))
+            {
+                Ok(_) => {
+                    opened_any = true;
+                    break;
+                }
+                Err(e) if e.kind() == ErrorKind::PermissionDenied => denied = true,
+                Err(e) if e.raw_os_error() == Some(EBUSY) => busy = true,
+                // Past the last node that exists: nothing more to learn.
+                Err(e) if e.raw_os_error() == Some(ENOENT) => break,
+                Err(_) => break,
             }
-            Err(e) if e.kind() == ErrorKind::PermissionDenied => denied = true,
-            Err(e) if e.raw_os_error() == Some(EBUSY) => busy = true,
-            // Past the last node that exists: nothing more to learn.
-            Err(e) if e.raw_os_error() == Some(ENOENT) => break,
-            Err(_) => break,
         }
+        fold_bpf_scan(opened_any, denied, busy)
     }
-    fold_bpf_scan(opened_any, denied, busy)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "freebsd")))]
-fn scan_bpf() -> Option<Readiness> {
-    None
+mod bpf {
+    /// No such nodes here, so the pcap attempt is the whole answer.
+    pub(super) fn scan() -> Option<super::Readiness> {
+        None
+    }
 }
 
 /// Attempt a capture on `iface`, or on the first non-loopback interface libpcap
@@ -142,7 +148,7 @@ fn scan_bpf() -> Option<Readiness> {
 pub fn check(iface: Option<&str>) -> (Readiness, Option<String>) {
     // Asked first: on macOS a permission problem is global, and the raw errno
     // separates "refused" from "in use", which libpcap's text does not.
-    if let Some(verdict) = scan_bpf() {
+    if let Some(verdict) = bpf::scan() {
         return (verdict, iface.map(str::to_string));
     }
 
