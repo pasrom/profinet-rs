@@ -72,14 +72,6 @@ struct Cli {
     #[arg(short, long, value_name = "IFACE", global = true)]
     interface: Option<String>,
 
-    /// Enable verbose output.
-    #[arg(short, long)]
-    verbose: bool,
-
-    /// Enable debug output.
-    #[arg(long)]
-    debug: bool,
-
     /// Discovery timeout in seconds.
     #[arg(short, long, default_value_t = 10)]
     timeout: u64,
