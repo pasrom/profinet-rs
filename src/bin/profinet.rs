@@ -359,6 +359,23 @@ enum Command {
         /// Cyclic cycle time in ms (power of two, default 16).
         #[arg(long, default_value_t = 16)]
         cycle_ms: u16,
+        /// How many cycles of silence end the cyclic link, in both directions.
+        ///
+        /// It sets our own receive watchdog and the time the device holds our
+        /// last output before deciding we are gone. The default of 6 is the
+        /// smallest value that is comfortably above the wire: on a link that
+        /// is behaving, frames arrive one cycle apart and nothing comes close
+        /// to it.
+        ///
+        /// Raise it where the controller is a process on a general-purpose
+        /// operating system rather than dedicated hardware. There the whole
+        /// process is occasionally taken off the processor for a while, and
+        /// the link looks dead although both sides are fine. A fault is not
+        /// recoverable: the output image freezes and the session has to be
+        /// built again, so a margin costs a slower reaction to a link that
+        /// really did die, and nothing else.
+        #[arg(long, default_value_t = 6, value_parser = parse_watchdog_factor)]
+        watchdog_factor: u16,
         /// Bits that may ever be driven on the output image, as a byte mask
         /// (decimal or 0x hex).
         ///
@@ -1193,6 +1210,22 @@ fn install_shutdown_handler() -> Result<(), String> {
 
 /// RT_CLASS_1 reduction ratios are powers of two up to 512; reject anything
 /// else before touching the device.
+/// A watchdog factor the device has a chance of accepting.
+///
+/// Zero would mean the link can never be declared dead; the upper bound is not
+/// a rule of the protocol but of arithmetic: the watchdog is this many cycles,
+/// so at a slow cycle a large factor is minutes, which no consumer means.
+/// Devices impose their own limit and refuse the connect, which is reported.
+fn parse_watchdog_factor(text: &str) -> Result<u16, String> {
+    let value: u16 = text
+        .parse()
+        .map_err(|_| format!("watchdog factor must be a number, got {text:?}"))?;
+    if !(1..=1024).contains(&value) {
+        return Err(format!("watchdog factor must be in 1..=1024, got {value}"));
+    }
+    Ok(value)
+}
+
 fn validate_cycle_ms(cycle_ms: u16) -> Result<(), String> {
     if !(1..=512).contains(&cycle_ms) || !cycle_ms.is_power_of_two() {
         return Err(format!(
@@ -2043,6 +2076,7 @@ fn start_cyclic_tier(
     input_submodule: Option<(u16, u16)>,
     gsdml_path: &str,
     cycle_ms: u16,
+    watchdog_factor: u16,
     require_safe_output: bool,
     timeout: Duration,
 ) -> Result<CyclicTier, String> {
@@ -2137,8 +2171,8 @@ fn start_cyclic_tier(
         io_slots: io_slots.clone(),
         send_clock_factor,
         reduction_ratio: cycle_ms,
-        watchdog_factor: 6,
-        data_hold_factor: 6,
+        watchdog_factor,
+        data_hold_factor: watchdog_factor,
     };
     let mut conn = RpcConn::new_raw(
         iface,
@@ -2169,7 +2203,7 @@ fn start_cyclic_tier(
         result.output_frame_id,
         send_clock_factor,
         cycle_ms,
-        6,
+        watchdog_factor,
     );
     let mut cyclic = CyclicController::new(iface, cm_mac, dev.mac, input_iocr, output_iocr, 3)?;
     // Safety: register the safe image with the controller so EVERY stop
@@ -2418,6 +2452,7 @@ const SERVE_BUSY_RETRIES: u32 = 5;
 struct ServeCyclic<'a> {
     gsdml_path: &'a str,
     cycle_ms: u16,
+    watchdog_factor: u16,
     allow_mask: u8,
     seconds: u64,
 }
@@ -2500,6 +2535,7 @@ fn cmd_serve(
                 None,
                 c.gsdml_path,
                 c.cycle_ms,
+                c.watchdog_factor,
                 commanding,
                 timeout,
             )?;
@@ -3300,6 +3336,7 @@ fn run(cli: &Cli) -> Result<i32, String> {
             cyclic,
             gsdml,
             cycle_ms,
+            watchdog_factor,
             allow_mask,
             i_am_on_the_bench,
             seconds,
@@ -3333,6 +3370,7 @@ fn run(cli: &Cli) -> Result<i32, String> {
                     Some(ServeCyclic {
                         gsdml_path: gsdml,
                         cycle_ms: *cycle_ms,
+                        watchdog_factor: *watchdog_factor,
                         allow_mask: *allow_mask,
                         seconds: *seconds,
                     })
@@ -4164,6 +4202,19 @@ mod tests {
     /// than being blessed by a golden adjusted to fit it.
     ///
     /// Values are distinct per field on purpose: swapping two same-typed
+    /// A factor of zero reads like "no watchdog", which is not what it would
+    /// do: it would be sent to the device as a data hold time of zero cycles.
+    /// Refusing it is the only honest answer, and the upper bound keeps a typo
+    /// from turning the watchdog into minutes.
+    #[test]
+    fn a_watchdog_factor_outside_the_useful_range_is_refused() {
+        assert_eq!(parse_watchdog_factor("6"), Ok(6));
+        assert_eq!(parse_watchdog_factor("1024"), Ok(1024));
+        assert!(parse_watchdog_factor("0").is_err());
+        assert!(parse_watchdog_factor("1025").is_err());
+        assert!(parse_watchdog_factor("six").is_err());
+    }
+
     /// arguments inside a builder changes the output here.
     #[test]
     fn emitted_lines_are_pinned() {
