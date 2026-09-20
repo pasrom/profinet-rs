@@ -1314,6 +1314,7 @@ enum Tag {
     ControlActive,
     CurrentOutput,
     Cyclic,
+    CyclicState,
     CyclicStarted,
     Data,
     Deadman,
@@ -1801,6 +1802,32 @@ fn cyclic_started_line(
     })
 }
 
+/// `{"type":"cyclic_state",..}` — the cyclic link changed state, stamped with
+/// the moment it happened.
+///
+/// The transition into `fault` is the one a consumer cannot afford to miss:
+/// from then on the output image is frozen and every command is refused, so
+/// without this line the first sign is a refusal seconds later, with nothing
+/// to say when the link actually went. The counters around it come from the
+/// `status` line that brackets this one.
+#[derive(Serialize)]
+struct CyclicStateChange<'a> {
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+    from: &'a str,
+    to: &'a str,
+}
+
+fn cyclic_state_line(host_us: u128, from: &str, to: &str) -> String {
+    json_line(&CyclicStateChange {
+        tag: Tag::CyclicState,
+        host_us,
+        from,
+        to,
+    })
+}
+
 /// `{"type":"control_active",..}` — commanding is possible and this is what it
 /// may drive. Goes out even with an all-zero mask: that is how a consumer
 /// learns nothing has been armed.
@@ -1861,18 +1888,37 @@ fn deadman_line() -> String {
 struct Status {
     #[serde(rename = "type")]
     tag: Tag,
+    host_us: u128,
     tx: u64,
     rx: u64,
     missed: u64,
+    /// Frames that arrived but carried a status the receiver would not accept.
+    invalid: u64,
+    /// Longest gap between two accepted input frames so far, in microseconds.
+    /// `missed` says how many watchdog periods went by unserved, this says how
+    /// bad the worst single gap was, which is what tells a slow link from a
+    /// link that stopped.
+    max_rx_gap_us: u64,
     out_byte: u8,
 }
 
-fn status_line(tx: u64, rx: u64, missed: u64, out_byte: u8) -> String {
+fn status_line(
+    host_us: u128,
+    tx: u64,
+    rx: u64,
+    missed: u64,
+    invalid: u64,
+    max_rx_gap_us: u64,
+    out_byte: u8,
+) -> String {
     json_line(&Status {
         tag: Tag::Status,
+        host_us,
         tx,
         rx,
         missed,
+        invalid,
+        max_rx_gap_us,
         out_byte,
     })
 }
@@ -2139,6 +2185,19 @@ fn start_cyclic_tier(
             &hex_encode(data),
         ));
     });
+    // The cyclic layer reports its own failures through these two callbacks,
+    // and nothing was listening: a watchdog escalation named its cause and
+    // then went nowhere. What reached the caller was the aftermath, every
+    // command refused "in fault state", which says what is blocked but not
+    // what happened or when. Both now go out like any other event.
+    cyclic.on_error(|msg| emit(&error_msg_line(msg)));
+    cyclic.on_state_change(|from, to| {
+        emit(&cyclic_state_line(
+            host_unix_us(),
+            from.as_str(),
+            to.as_str(),
+        ));
+    });
     cyclic.start()?;
     // PrmEnd only after RT output is flowing: some devices start their input
     // provider only once they see valid controller frames.
@@ -2192,7 +2251,7 @@ fn host_unix_us() -> u128 {
 /// Wire protocol version of the `serve` NDJSON contract. A consumer that
 /// understands a different one must refuse rather than misread: the two
 /// programs ship separately and can drift apart.
-const SERVE_PROTO: u32 = 5;
+const SERVE_PROTO: u32 = 6;
 
 /// One parsed request from the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -2663,9 +2722,12 @@ fn cmd_serve(
                 last_status = Instant::now();
                 let stats = ctl.stats();
                 emit(&status_line(
+                    host_unix_us(),
                     stats.frames_sent,
                     stats.frames_received,
                     stats.frames_missed,
+                    stats.frames_invalid,
+                    stats.max_rx_interval_us,
                     state.effective(),
                 ));
             }
@@ -4166,7 +4228,7 @@ mod tests {
         assert_eq!(
             hello_line("demo", true, 30, false, 6),
             format!(
-                r#"{{"proto":5,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
+                r#"{{"proto":6,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );
@@ -4246,8 +4308,12 @@ mod tests {
             r#"{"type":"cyclic_started","cycle_ms":16,"input_frame_id":32769,"output_frame_id":32770,"input_len":40,"out_slot":1,"out_subslot":2}"#
         );
         assert_eq!(
-            status_line(11, 12, 13, 4),
-            r#"{"type":"status","tx":11,"rx":12,"missed":13,"out_byte":4}"#
+            cyclic_state_line(1, "running", "fault"),
+            r#"{"type":"cyclic_state","host_us":1,"from":"running","to":"fault"}"#
+        );
+        assert_eq!(
+            status_line(1, 11, 12, 13, 14, 15, 4),
+            r#"{"type":"status","host_us":1,"tx":11,"rx":12,"missed":13,"invalid":14,"max_rx_gap_us":15,"out_byte":4}"#
         );
 
         // Shutdown.
