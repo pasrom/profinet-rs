@@ -105,6 +105,20 @@ fn pnio_from_args_status_rmpm_error() {
     assert!(error.to_string().contains("Unknown blocks"), "got {error}");
 }
 
+/// A read or write that names an AR the device has already dropped is answered
+/// with this, and it is the first thing a caller sees after an AR went away
+/// without the caller noticing. Decoding it as "unknown" turns the one status
+/// that explains the situation into noise.
+#[test]
+fn pnio_from_args_status_rmpm_ar_uuid_unknown() {
+    let error = PnioError::from_args_status(0x054081DE);
+    assert_eq!(error.error_code, 0xDE); // IODReadRes / IODWriteRes
+    assert_eq!(error.error_decode, 0x81); // PNIO
+    assert_eq!(error.error_code1, 0x40); // RMPM
+    assert_eq!(error.error_code2, 0x05);
+    assert!(error.to_string().contains("AR UUID unknown"), "got {error}");
+}
+
 #[test]
 fn pnio_from_args_status_unknown_error() {
     let error = PnioError::from_args_status(0xFFB280DE);

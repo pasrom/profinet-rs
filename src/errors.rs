@@ -161,6 +161,22 @@ impl PnioError {
     pub const RMPM_WRONG_ALCR_COUNT: u8 = 0x03;
     /// Out of AR resources
     pub const RMPM_OUT_OF_AR_RESOURCES: u8 = 0x04;
+    /// The AR the request refers to is not known to the device
+    pub const RMPM_AR_UUID_UNKNOWN: u8 = 0x05;
+    /// The request does not fit the state the AR is in
+    pub const RMPM_STATE_CONFLICT: u8 = 0x06;
+    /// Out of provider, consumer or alarm resources
+    pub const RMPM_OUT_OF_PROVIDER_CONSUMER_ALARM: u8 = 0x07;
+    /// Out of memory
+    pub const RMPM_OUT_OF_MEMORY: u8 = 0x08;
+    /// The physical device is already owned by another AR
+    pub const RMPM_PDEV_ALREADY_OWNED: u8 = 0x09;
+    /// AR set state conflict while connecting
+    pub const RMPM_AR_SET_STATE_CONFLICT: u8 = 0x0A;
+    /// AR set parameter conflict while connecting
+    pub const RMPM_AR_SET_PARAMETER_CONFLICT: u8 = 0x0B;
+    /// Unspecified error
+    pub const RMPM_UNSPECIFIC: u8 = 0xFF;
 
     // PNIO-CM ErrorCode2 values for AR (CM_EC1_AR = 0x01)
     pub const CM_AR_INVALID_TYPE: u8 = 0x00;
@@ -251,7 +267,7 @@ impl PnioError {
 
     /// Human-readable error messages for PNIO (ErrorDecode=0x81).
     /// Includes RMPM (Remote Protocol Machine) errors.
-    pub const PNIO_ERROR_MESSAGES: [((u8, u8), &'static str); 6] = [
+    pub const PNIO_ERROR_MESSAGES: [((u8, u8), &'static str); 14] = [
         // RMPM errors (EC1=0x40)
         (
             (Self::CM_EC1_RMPM, Self::RMPM_ARGS_LEN_INVALID),
@@ -272,6 +288,38 @@ impl PnioError {
         (
             (Self::CM_EC1_RMPM, Self::RMPM_OUT_OF_AR_RESOURCES),
             "Out of AR resources",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_AR_UUID_UNKNOWN),
+            "AR UUID unknown",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_STATE_CONFLICT),
+            "State conflict",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_OUT_OF_PROVIDER_CONSUMER_ALARM),
+            "Out of provider, consumer or alarm resources",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_OUT_OF_MEMORY),
+            "Out of memory",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_PDEV_ALREADY_OWNED),
+            "Physical device already owned by another AR",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_AR_SET_STATE_CONFLICT),
+            "AR set state conflict during connect",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_AR_SET_PARAMETER_CONFLICT),
+            "AR set parameter conflict during connect",
+        ),
+        (
+            (Self::CM_EC1_RMPM, Self::RMPM_UNSPECIFIC),
+            "Unspecific RMPM error",
         ),
         // CMDEV errors (EC1=0x3D) when ErrorDecode=0x81
         (
