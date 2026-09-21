@@ -9,9 +9,9 @@
 //! watchdog_factor 6 / data_hold_factor 6.
 
 use profinet_rs::connect::{
-    alarm_cr_block, ar_block_req, build_connect_request, expected_submodule_block, iocr_block_req,
-    IocrSetup, AR_PROPERTIES_DEVICE_ACCESS, AR_PROPERTIES_IOCAR, AR_TYPE_IOCAR_SINGLE,
-    AR_TYPE_IOSAR,
+    alarm_cr_block, apply_zero_io_exclusion, ar_block_req, build_connect_request,
+    expected_submodule_block, iocr_block_req, IocrSetup, AR_PROPERTIES_DEVICE_ACCESS,
+    AR_PROPERTIES_IOCAR, AR_TYPE_IOCAR_SINGLE, AR_TYPE_IOSAR,
 };
 use profinet_rs::gsdml::{load_gsdml, DeviceSlot};
 use profinet_rs::rpc::{object_uuid, IFACE_UUID_DEVICE};
@@ -288,4 +288,66 @@ fn alarm_cr_block_constants() {
     assert_eq!(DEFAULT_MAX_ALARM_DATA_LENGTH, 200);
     assert_eq!(DEFAULT_TAG_HEADER_HIGH, 0xC000);
     assert_eq!(DEFAULT_TAG_HEADER_LOW, 0xA000);
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in exclusion of submodules without process data. The default path is
+// covered by the golden tests above; these assert what the opt-in removes.
+// ---------------------------------------------------------------------------
+
+fn be16(data: &[u8], off: usize) -> u16 {
+    u16::from_be_bytes([data[off], data[off + 1]])
+}
+
+/// Input IOCR: (data_length, number of IOData objects, number of IOCS entries).
+/// Layout after the 6-byte block header: 40 fixed bytes, NumberOfAPIs(2),
+/// API(4), NumberOfIODataObjects(2), objects (6 bytes each), NumberOfIOCS(2).
+fn iocr_counts(block: &[u8]) -> (u16, u16, u16) {
+    let num_objects = be16(block, 50);
+    let nbr_iocs = be16(block, 52 + 6 * num_objects as usize);
+    (be16(block, 16), num_objects, nbr_iocs)
+}
+
+#[test]
+fn zero_io_exclusion_keeps_the_data_carrying_submodules_in_order() {
+    let slots = setup().io_slots;
+    // The demo device's four zero-I/O submodules are the DAP and its ports —
+    // dropping them is a real change to what the device is told, which is why
+    // this is opt-in and not a cleanup applied by default.
+    assert_eq!(slots.len(), 5);
+    assert_eq!(
+        apply_zero_io_exclusion(slots.clone(), true),
+        vec![slots[4].clone()]
+    );
+    // Not asking for it leaves the list exactly as it was.
+    assert_eq!(apply_zero_io_exclusion(slots.clone(), false), slots);
+}
+
+#[test]
+fn zero_io_exclusion_removes_their_iocs_bytes_from_the_iocr() {
+    let full = setup();
+    let trimmed = IocrSetup {
+        io_slots: apply_zero_io_exclusion(full.io_slots.clone(), true),
+        ..full.clone()
+    };
+
+    // Full topology: one 47-byte input object plus its IOPS byte, then one
+    // consumer-status byte for each of the four submodules without inputs.
+    assert_eq!(iocr_counts(&iocr_block_req(1, 1, &full)), (52, 1, 4));
+    // Trimmed: the four status bytes are gone, and the frame shrinks by four.
+    assert_eq!(iocr_counts(&iocr_block_req(1, 1, &trimmed)), (48, 1, 0));
+}
+
+#[test]
+fn zero_io_exclusion_stops_declaring_them_as_expected_submodules() {
+    let full = setup();
+    let trimmed = IocrSetup {
+        io_slots: apply_zero_io_exclusion(full.io_slots.clone(), true),
+        ..full.clone()
+    };
+
+    // NumberOfAPIs sits right behind the 6-byte block header; the API entries
+    // are one per slot, so slot 0 disappears entirely with its submodules.
+    assert_eq!(be16(&expected_submodule_block(&full), 6), 2);
+    assert_eq!(be16(&expected_submodule_block(&trimmed), 6), 1);
 }

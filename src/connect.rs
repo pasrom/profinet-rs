@@ -51,6 +51,37 @@ pub struct IocrSetup {
     pub data_hold_factor: u16,
 }
 
+/// The slot list an AR is built from, under the caller's policy for submodules
+/// that carry neither input nor output data. `exclude` false keeps the list as
+/// it is, which is the default everywhere.
+///
+/// Keeping the topology whole is the default because a submodule without
+/// process data still belongs to the configuration: it is
+/// declared in the ExpectedSubmodule block as NO_IO, and it contributes one
+/// consumer-status byte to each IOCR. That is what the spec describes and what
+/// a device that follows it expects to be told.
+///
+/// Some devices refuse the Connect when such a submodule is in the AR. For
+/// those, and only for those, this removes them from every block built from
+/// the list: the ExpectedSubmodule block no longer declares them, and neither
+/// IOCR reserves a status byte for them. Applying it changes what the device is
+/// told about its own configuration, so it stays a deliberate choice by the
+/// caller rather than something inferred from a failed Connect.
+///
+/// Call this once, on the list that then feeds both the Connect blocks and the
+/// runtime IOCR layout: the two must describe the same frame, and filtering
+/// only one of them silently shifts every frame offset behind the dropped
+/// submodule, so the process image would decode against the wrong bytes.
+pub fn apply_zero_io_exclusion(slots: Vec<IoSlot>, exclude: bool) -> Vec<IoSlot> {
+    if !exclude {
+        return slots;
+    }
+    slots
+        .into_iter()
+        .filter(|s| s.input_length > 0 || s.output_length > 0)
+        .collect()
+}
+
 /// PNBlockHeader: block_type ++ block_length ++ version 1.0.
 fn block_header(out: &mut Vec<u8>, block_type: u16, block_length: u16) {
     out.extend_from_slice(&block_type.to_be_bytes());
