@@ -24,7 +24,7 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 
 use profinet_rs::capture_check;
-use profinet_rs::connect::IocrSetup;
+use profinet_rs::connect::{apply_zero_io_exclusion, IocrSetup};
 use profinet_rs::cyclic::{CyclicController, CyclicState};
 use profinet_rs::dcp;
 use profinet_rs::gsdml::load_gsdml;
@@ -296,6 +296,10 @@ enum Command {
         /// Submodule override as slot:subslot:submodule_id (repeatable).
         #[arg(long, value_name = "SLOT:SUBSLOT:ID")]
         submodule: Vec<String>,
+        /// Leave submodules without input or output data out of the AR
+        /// (device workaround; see `serve --help`).
+        #[arg(long)]
+        exclude_zero_io_submodules: bool,
     },
 
     /// Serve acyclic record reads and writes over stdin/stdout as NDJSON, so
@@ -368,6 +372,15 @@ enum Command {
         /// really did die, and nothing else.
         #[arg(long, default_value_t = 6, value_parser = parse_watchdog_factor)]
         watchdog_factor: u16,
+        /// Leave submodules without input or output data out of the AR.
+        ///
+        /// The default declares the matched topology whole, which is what the
+        /// spec describes. Some devices refuse the Connect when a submodule
+        /// carrying no process data is in it; this is the workaround for
+        /// those, and it changes what the device is told about its own
+        /// configuration, so it is never applied on its own. Needs --cyclic.
+        #[arg(long)]
+        exclude_zero_io_submodules: bool,
         /// Bits that may ever be driven on the output image, as a byte mask
         /// (decimal or 0x hex).
         ///
@@ -881,6 +894,7 @@ fn print_im3(im3: im::InM3) {
 // Cyclic command (connect + cyclic + monitor), port of cli.py cmd_cyclic
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_cyclic(
     iface: &str,
     target: &str,
@@ -888,6 +902,7 @@ fn cmd_cyclic(
     cycle_ms: u16,
     duration: u64,
     submodules: &[String],
+    exclude_zero_io_submodules: bool,
     timeout: Duration,
 ) -> Result<i32, String> {
     validate_cycle_ms(cycle_ms)?;
@@ -933,6 +948,7 @@ fn cmd_cyclic(
     }
     let gsdml_device = load_gsdml(gsdml_path)?;
     let io_slots = gsdml_device.build_io_slots_from_device(&device_slots, None)?;
+    let io_slots = apply_zero_io_exclusion(io_slots, exclude_zero_io_submodules);
 
     println!("Matching against GSDML...");
     let (mut total_in, mut total_out) = (0usize, 0usize);
@@ -2070,6 +2086,7 @@ fn start_cyclic_tier(
     gsdml_path: &str,
     cycle_ms: u16,
     watchdog_factor: u16,
+    exclude_zero_io_submodules: bool,
     require_safe_output: bool,
     timeout: Duration,
 ) -> Result<CyclicTier, String> {
@@ -2080,6 +2097,7 @@ fn start_cyclic_tier(
     let device_slots = conn.discover_slots()?;
     let gsdml_device = load_gsdml(gsdml_path)?;
     let io_slots = gsdml_device.build_io_slots_from_device(&device_slots, None)?;
+    let io_slots = apply_zero_io_exclusion(io_slots, exclude_zero_io_submodules);
 
     // Pre-flight: the GSDML must agree with the running firmware about the
     // input image, or every cyclic frame decodes to zeros without any error.
@@ -2446,6 +2464,7 @@ struct ServeCyclic<'a> {
     gsdml_path: &'a str,
     cycle_ms: u16,
     watchdog_factor: u16,
+    exclude_zero_io_submodules: bool,
     allow_mask: u8,
     seconds: u64,
 }
@@ -2529,6 +2548,7 @@ fn cmd_serve(
                 c.gsdml_path,
                 c.cycle_ms,
                 c.watchdog_factor,
+                c.exclude_zero_io_submodules,
                 commanding,
                 timeout,
             )?;
@@ -3318,8 +3338,16 @@ fn run(cli: &Cli) -> Result<i32, String> {
             cycle_ms,
             duration,
             submodule,
+            exclude_zero_io_submodules,
         } => cmd_cyclic(
-            iface, target, gsdml, *cycle_ms, *duration, submodule, timeout,
+            iface,
+            target,
+            gsdml,
+            *cycle_ms,
+            *duration,
+            submodule,
+            *exclude_zero_io_submodules,
+            timeout,
         ),
         Command::Serve {
             target,
@@ -3330,6 +3358,7 @@ fn run(cli: &Cli) -> Result<i32, String> {
             gsdml,
             cycle_ms,
             watchdog_factor,
+            exclude_zero_io_submodules,
             allow_mask,
             i_am_on_the_bench,
             seconds,
@@ -3341,6 +3370,15 @@ fn run(cli: &Cli) -> Result<i32, String> {
                 false if *allow_mask != 0 => {
                     return Err(
                         "--allow-mask only applies to the output image, which needs --cyclic"
+                            .to_string(),
+                    )
+                }
+                // Same reasoning as --allow-mask: the flag only means
+                // something for the AR that --cyclic opens.
+                false if *exclude_zero_io_submodules => {
+                    return Err(
+                        "--exclude-zero-io-submodules only applies to the cyclic AR, which \
+                         needs --cyclic"
                             .to_string(),
                     )
                 }
@@ -3364,6 +3402,7 @@ fn run(cli: &Cli) -> Result<i32, String> {
                         gsdml_path: gsdml,
                         cycle_ms: *cycle_ms,
                         watchdog_factor: *watchdog_factor,
+                        exclude_zero_io_submodules: *exclude_zero_io_submodules,
                         allow_mask: *allow_mask,
                         seconds: *seconds,
                     })
