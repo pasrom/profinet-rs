@@ -3379,6 +3379,16 @@ fn safe_shutdown(
 }
 
 fn run(cli: &Cli) -> Result<i32, String> {
+    // Before every early return below, so an argument is judged the same way
+    // whichever command it is passed with: a value this rejects must not be
+    // accepted just because `proto` never looks at it. A caller probing its
+    // arguments would otherwise be told yes and refused on the next command.
+    if let Some(ip) = cli.source_ip {
+        if ip == [0, 0, 0, 0] {
+            return Err("--source-ip 0.0.0.0 is not a usable source address".to_string());
+        }
+        SOURCE_IP.store(u32::from_be_bytes(ip), Ordering::SeqCst);
+    }
     SERVE_MODE.store(
         matches!(cli.command, Command::Serve { .. }),
         Ordering::SeqCst,
@@ -3409,14 +3419,6 @@ fn run(cli: &Cli) -> Result<i32, String> {
         .as_deref()
         .ok_or("--interface <IFACE> is required for this command")?;
     let timeout = Duration::from_secs(cli.timeout);
-    // Settled before any command runs, so every source-address choice below
-    // sees the same answer.
-    if let Some(ip) = cli.source_ip {
-        if ip == [0, 0, 0, 0] {
-            return Err("--source-ip 0.0.0.0 is not a usable source address".to_string());
-        }
-        SOURCE_IP.store(u32::from_be_bytes(ip), Ordering::SeqCst);
-    }
     // The DCP commands need the controller MAC; look it up once up front.
     match &cli.command {
         // Dispatched above, before the interface guard; these arms exist only
@@ -3581,6 +3583,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialises the tests that read or write the process-global command-line
+    /// state. Cargo runs the tests of one binary on several threads, so a test
+    /// that stores into `SOURCE_IP` or `SERVE_MODE` would otherwise decide what
+    /// an unrelated test sees. Any test touching that state takes this first.
+    static PROCESS_STATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use clap::Parser;
 
     fn parse(args: &[&str]) -> Cli {
@@ -3854,17 +3862,24 @@ mod tests {
         // The note exists to explain a silent timeout. A caller who pinned the
         // address has already made that call, so repeating it on every command
         // would be noise.
+        let _guard = PROCESS_STATE.lock().unwrap_or_else(|e| e.into_inner());
         SOURCE_IP.store(u32::from_be_bytes([10, 0, 0, 5]), Ordering::SeqCst);
-        let (ip, note) = chosen_source("no-such-iface", [192, 168, 0, 2]).expect("pinned");
+        let chosen = chosen_source("no-such-iface", [192, 168, 0, 2]);
+        // Restore before asserting: a failed assertion unwinds, and leaving
+        // the pin set would change what every later test in this binary sees.
+        SOURCE_IP.store(0, Ordering::SeqCst);
+
+        let (ip, note) = chosen.expect("pinned");
         assert_eq!(ip, [10, 0, 0, 5]);
         assert!(note.is_none());
         // It also short-circuits the interface lookup, which is what makes it
-        // usable when libpcap reports no address at all.
-        SOURCE_IP.store(0, Ordering::SeqCst);
+        // usable when libpcap reports no address at all — the interface name
+        // above does not exist.
     }
 
     #[test]
     fn the_note_names_both_addresses() {
+        let _guard = PROCESS_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let note = source_address_note(
             pcap::SourceAddress {
                 ip: [10, 0, 0, 5],
