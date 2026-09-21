@@ -405,14 +405,16 @@ impl Shared {
             return;
         }
 
-        // Validity decides whether this frame may feed the liveness signals.
-        // A device that keeps sending frames marked INVALID (provider stopped,
-        // data BAD/substitute) must NOT keep the watchdog satisfied or pull the
-        // state back to Running: otherwise "link degraded to all-invalid" is
-        // indistinguishable from healthy, FAULT never escalates, and the
-        // control loop's abort-on-FAULT never fires. Diagnostic counters still
-        // record the frame as received.
-        let valid = frame.is_valid();
+        // Liveness decides whether this frame may feed the watchdog and the
+        // state machine. A device that keeps sending frames it disowns —
+        // provider stopped, data marked invalid, the frame flagged to be
+        // disregarded, a transfer problem reported — must NOT keep the
+        // watchdog satisfied or pull the state back to Running: otherwise
+        // "link degraded to nothing usable" is indistinguishable from
+        // healthy, FAULT never escalates, and the control loop's
+        // abort-on-FAULT never fires. Diagnostic counters still record the
+        // frame as received.
+        let valid = frame_is_alive(&frame);
 
         {
             let now = Instant::now();
@@ -702,6 +704,30 @@ fn tx_loop(shared: Arc<Shared>, mut sock: RawSocket) -> RawSocket {
     }
 
     sock
+}
+
+/// Whether this frame is evidence that the link is delivering usable data,
+/// which is a narrower question than the DataValid bit alone.
+///
+/// A frame counts only when the provider says it is running, the data is
+/// marked valid, the transfer reports no problem, and the frame is not
+/// flagged to be disregarded. Each of those is a way for a device to keep
+/// sending at cycle rate while delivering nothing: the frames arrive, so the
+/// wire is fine, but treating them as proof of life would hold the receive
+/// watchdog open against a link that has stopped carrying data.
+///
+/// Deliberately not part of the test: the station-problem indicator and the
+/// primary/backup state. A device with a diagnosis pending still sends usable
+/// process data, and refusing its frames would turn any pending diagnosis
+/// into a dead link; primary versus backup belongs to a redundancy
+/// arrangement this controller does not take part in.
+///
+/// This lives here rather than beside the bit predicates in `rt`, because it
+/// is not a fact about the frame. It is this controller's policy on what it
+/// will accept as proof of life, and a different consumer of the same frame —
+/// a redundant-AR controller, say — would answer it differently.
+fn frame_is_alive(frame: &RtFrame) -> bool {
+    frame.is_valid() && frame.is_running() && !frame.is_ignored() && frame.transfer_status == 0
 }
 
 /// The watchdog half of one receive-loop pass: when nothing has satisfied the
@@ -1117,7 +1143,7 @@ mod tests {
     //! which the public API deliberately does not expose.
 
     use super::*;
-    use crate::rt::{IoDataObject, IOCR_TYPE_INPUT, IOCR_TYPE_OUTPUT};
+    use crate::rt::{IoDataObject, DATA_STATUS_IGNORE, IOCR_TYPE_INPUT, IOCR_TYPE_OUTPUT};
 
     fn iocr(iocr_type: u16, frame_id: u16) -> IocrConfig {
         IocrConfig {
@@ -1158,13 +1184,32 @@ mod tests {
         plock(&c.shared.output_builder).build()[0..4].to_vec()
     }
 
-    /// An Ethernet+RT input frame from the device, marked valid or invalid.
-    fn device_frame(valid: bool) -> Vec<u8> {
+    /// The DataStatus a healthy provider sends, the same combination our own
+    /// TX path uses for a running frame.
+    const ALIVE: u8 =
+        DATA_STATUS_VALID | DATA_STATUS_PROVIDER_RUN | DATA_STATUS_STATION_OK | DATA_STATUS_STATE;
+
+    /// An Ethernet+RT input frame from the device, alive or disowned.
+    fn device_frame(alive: bool) -> Vec<u8> {
+        // Disowned here means the data is not marked valid, the plainest of
+        // the several ways a device can keep sending without delivering.
+        device_frame_with(
+            if alive {
+                ALIVE
+            } else {
+                ALIVE & !DATA_STATUS_VALID
+            },
+            0,
+        )
+    }
+
+    /// An Ethernet+RT input frame carrying an exact status pair.
+    fn device_frame_with(data_status: u8, transfer_status: u8) -> Vec<u8> {
         let rt = RtFrame {
             frame_id: 0xC001,
             cycle_counter: 1,
-            data_status: if valid { DATA_STATUS_VALID } else { 0 },
-            transfer_status: 0,
+            data_status,
+            transfer_status,
             payload: vec![0x80, 0x00, 0x00, 0x00, 0x80],
         };
         let mut f = Vec::new();
@@ -1262,6 +1307,60 @@ mod tests {
         // The steady-state figures stay out of it: an outage is not jitter.
         assert_eq!(stats.rx_interval_count, 0, "no interval counts as steady");
         assert_eq!(stats.max_rx_jitter_us, 0);
+    }
+
+    #[test]
+    fn the_ways_a_device_can_send_without_delivering_are_all_disowned() {
+        // Each of these keeps frames arriving at cycle rate while the device
+        // is not actually delivering usable data. None may satisfy the
+        // watchdog. The provider-stop case is the one our own TX path sends
+        // when it shuts down, so it is not hypothetical.
+        for (name, frame) in [
+            (
+                "provider stopped",
+                device_frame_with(ALIVE & !DATA_STATUS_PROVIDER_RUN, 0),
+            ),
+            (
+                "data not valid",
+                device_frame_with(ALIVE & !DATA_STATUS_VALID, 0),
+            ),
+            (
+                "frame flagged to be disregarded",
+                device_frame_with(ALIVE | DATA_STATUS_IGNORE, 0),
+            ),
+            ("transfer problem reported", device_frame_with(ALIVE, 0x01)),
+        ] {
+            let c = controller();
+            let armed = Instant::now() - Duration::from_secs(1);
+            plock(&c.shared.stats).last_receive_time = armed;
+
+            c.process_input_frame(&frame);
+
+            assert_eq!(
+                plock(&c.shared.stats).last_receive_time,
+                armed,
+                "{name}: must not re-arm the watchdog"
+            );
+            assert_eq!(plock(&c.shared.stats).frames_invalid, 1, "{name}: counted");
+        }
+    }
+
+    #[test]
+    fn a_pending_station_problem_is_still_a_live_link() {
+        // A device with a diagnosis pending goes on delivering process data.
+        // Refusing its frames would turn every pending diagnosis into a dead
+        // link, so the station-problem indicator is deliberately not part of
+        // the liveness test.
+        let c = controller();
+        let armed = Instant::now() - Duration::from_secs(1);
+        plock(&c.shared.stats).last_receive_time = armed;
+
+        c.process_input_frame(&device_frame_with(ALIVE & !DATA_STATUS_STATION_OK, 0));
+
+        assert!(
+            plock(&c.shared.stats).last_receive_time > armed,
+            "a pending diagnosis must not look like a dead link"
+        );
     }
 
     #[test]
