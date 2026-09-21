@@ -4,7 +4,8 @@
 
 use profinet_rs::dcp::{
     identify_all_request, parse_identify_response, set_ip_request, set_name_request,
-    set_name_request_qualified, DcpDevice, DCP_IDENTIFY_RESPONSE_FRAME_ID, DCP_SERVICE_ID_IDENTIFY,
+    set_name_request_qualified, DcpDevice, DCP_GET_SET_FRAME_ID, DCP_HELLO_FRAME_ID,
+    DCP_IDENTIFY_RESPONSE_FRAME_ID, DCP_SERVICE_ID_IDENTIFY, DCP_SERVICE_TYPE_REQUEST,
     DCP_SERVICE_TYPE_RESPONSE_SUCCESS, PROFINET_ETHERTYPE,
 };
 
@@ -192,11 +193,41 @@ fn parse_rejects_vlan_with_wrong_inner_ethertype() {
 }
 
 #[test]
-fn parse_rejects_request_service_type() {
+fn parse_rejects_request_frame_id() {
     // Our own Identify request must not parse as a response.
     let frame = identify_all_request(&SRC_MAC, XID);
     let err = parse_identify_response(&frame).unwrap_err();
+    assert!(err.contains("frame_id"), "unexpected error: {err}");
+}
+
+#[test]
+fn parse_rejects_request_service_type() {
+    // A frame carrying the Identify-response frame ID but a request service
+    // type is still not a response.
+    let mut frame = response_frame(&resp_block(0x02, 0x02, 0x0000, b"dev"));
+    frame[17] = DCP_SERVICE_TYPE_REQUEST;
+    let err = parse_identify_response(&frame).unwrap_err();
     assert!(err.contains("service_type"), "unexpected error: {err}");
+}
+
+#[test]
+fn parse_rejects_frames_that_are_not_identify_responses() {
+    // Cyclic RT and RTA alarm frames share EtherType 0x8892 and arrive in the
+    // same capture. Their bytes at the service-type and xid offsets are
+    // process data, so nothing further down the parse would recognise them as
+    // foreign: the frame ID is the only thing that separates them.
+    for frame_id in [
+        0x8000u16, // RT_CLASS_1 cyclic
+        0xC000,    // RT_CLASS_1 cyclic, controller-proposed range
+        0xFC01,    // RTA alarm, high priority
+        DCP_GET_SET_FRAME_ID,
+        DCP_HELLO_FRAME_ID,
+    ] {
+        let mut frame = response_frame(&resp_block(0x02, 0x02, 0x0000, b"dev"));
+        frame[14..16].copy_from_slice(&frame_id.to_be_bytes());
+        let err = parse_identify_response(&frame).unwrap_err();
+        assert!(err.contains("frame_id"), "unexpected error: {err}");
+    }
 }
 
 #[test]
@@ -324,6 +355,68 @@ mod cli_builders {
             parse_set_response(&set_response_frame(0x00), X ^ 0xff).unwrap(),
             None
         );
+    }
+
+    /// Build a minimal Ethernet+DCP GET response carrying one Device/NameOfStation
+    /// block, with the given frame ID and transaction id.
+    fn get_response_frame(frame_id: u16, xid: u32) -> Vec<u8> {
+        // option ++ suboption ++ length (incl. status) ++ status ++ "dev"
+        let block = [
+            DCP_OPTION_DEVICE,
+            DCP_SUBOPTION_DEVICE_NAME,
+            0x00,
+            0x05,
+            0x00,
+            0x00,
+            b'd',
+            b'e',
+            b'v',
+            0x00, // 2-byte alignment pad
+        ];
+        super::dcp_frame(
+            &S,
+            &D,
+            frame_id,
+            DCP_SERVICE_ID_GET,
+            DCP_SERVICE_TYPE_RESPONSE_SUCCESS,
+            xid,
+            &block,
+        )
+    }
+
+    #[test]
+    fn parse_get_response_reads_requested_block() {
+        let frame = get_response_frame(DCP_GET_SET_FRAME_ID, X);
+        let value =
+            parse_get_response(&frame, DCP_OPTION_DEVICE, DCP_SUBOPTION_DEVICE_NAME, X).unwrap();
+        assert_eq!(value.as_deref(), Some(&b"dev"[..]));
+    }
+
+    #[test]
+    fn parse_get_response_skips_foreign_xid() {
+        // A valid GET response, but to a different transaction: not ours, so
+        // the receive loop keeps waiting for its own answer.
+        let frame = get_response_frame(DCP_GET_SET_FRAME_ID, X ^ 0xff);
+        assert_eq!(
+            parse_get_response(&frame, DCP_OPTION_DEVICE, DCP_SUBOPTION_DEVICE_NAME, X).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_get_response_skips_other_frame_ids() {
+        // Everything else on EtherType 0x8892 — an Identify response from a
+        // parallel discovery, cyclic RT, an RTA alarm — is skipped even when
+        // its bytes at the xid offset happen to match.
+        for frame_id in [DCP_IDENTIFY_RESPONSE_FRAME_ID, 0x8000, 0xFC01] {
+            let frame = get_response_frame(frame_id, X);
+            assert_eq!(
+                parse_get_response(&frame, DCP_OPTION_DEVICE, DCP_SUBOPTION_DEVICE_NAME, X)
+                    .unwrap(),
+                None,
+                "frame_id 0x{frame_id:04X} must not be taken for a GET response"
+            );
+        }
     }
 
     #[test]

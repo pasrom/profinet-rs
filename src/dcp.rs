@@ -435,10 +435,17 @@ pub fn parse_set_response(frame: &[u8], expected_xid: u32) -> Result<Option<u8>,
 /// read_response with `once=True`): walk the response blocks like
 /// [`parse_identify_response`] and return the payload of the requested
 /// option/suboption block (BlockInfo word stripped), or `None` when absent.
+///
+/// `expected_xid` gates ownership exactly as in [`parse_set_response`]: only a
+/// GET/SET-frame response carrying our transaction id is ours, and anything
+/// else — a foreign device's DCP traffic, a stale reply to an earlier request,
+/// a cyclic RT or RTA frame from the same EtherType — yields `Ok(None)` so the
+/// caller skips it and keeps waiting for its own answer.
 pub fn parse_get_response(
     frame: &[u8],
     option: u8,
     suboption: u8,
+    expected_xid: u32,
 ) -> Result<Option<Vec<u8>>, String> {
     let payload = dcp_payload(frame)?;
     if payload.len() < 12 {
@@ -446,6 +453,11 @@ pub fn parse_get_response(
             "payload too short for DCP header: {} bytes",
             payload.len()
         ));
+    }
+    let frame_id = u16::from_be_bytes([payload[0], payload[1]]);
+    let xid = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
+    if frame_id != DCP_GET_SET_FRAME_ID || xid != expected_xid {
+        return Ok(None);
     }
     let service_type = payload[3];
     if service_type != DCP_SERVICE_TYPE_RESPONSE_SUCCESS {
@@ -501,9 +513,24 @@ pub struct DcpDevice {
 
 /// Parse a DCP Identify response Ethernet frame into a [`DcpDevice`],
 /// mirroring the per-frame logic of dcp.py read_response: skip an optional
-/// 802.1Q tag, require the PROFINET EtherType and a RESPONSE service type,
-/// then walk the 2-byte-aligned response blocks (6-byte header including the
-/// BlockInfo/status word, which the reference strips from the payload).
+/// 802.1Q tag, require the PROFINET EtherType, the Identify-response frame ID
+/// and a RESPONSE service type, then walk the 2-byte-aligned response blocks
+/// (6-byte header including the BlockInfo/status word, which the reference
+/// strips from the payload).
+///
+/// The frame ID is what separates DCP from everything else sharing EtherType
+/// 0x8892: cyclic RT and RTA alarm frames land in the same capture, and
+/// nothing further down the parse would recognise them as foreign — their
+/// bytes at the service-type and xid offsets are process data.
+///
+/// Unlike [`parse_get_response`] and [`parse_set_response`], this does not
+/// check the transaction id, because an Identify request is a multicast that
+/// many devices answer and the answers are collected rather than matched one
+/// to one. The xid gate belongs to whoever runs that collection:
+/// `pcap::aggregate_responses` applies it, via [`parse_dcp_xid`], to every
+/// frame before it gets here. A caller that parses an Identify response
+/// outside that loop has to apply it itself, or it will accept a response to
+/// somebody else's discovery.
 pub fn parse_identify_response(frame: &[u8]) -> Result<DcpDevice, String> {
     if frame.len() < 14 {
         return Err(format!(
@@ -518,6 +545,12 @@ pub fn parse_identify_response(frame: &[u8]) -> Result<DcpDevice, String> {
         return Err(format!(
             "payload too short for DCP header: {} bytes",
             payload.len()
+        ));
+    }
+    let frame_id = u16::from_be_bytes([payload[0], payload[1]]);
+    if frame_id != DCP_IDENTIFY_RESPONSE_FRAME_ID {
+        return Err(format!(
+            "not a DCP Identify response: frame_id 0x{frame_id:04X}"
         ));
     }
     let service_type = payload[3];
