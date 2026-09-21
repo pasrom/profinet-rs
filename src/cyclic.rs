@@ -252,11 +252,13 @@ impl Default for CyclicStats {
     }
 }
 
-type InputCallback = Box<dyn Fn(u16, u16, &[u8]) + Send>;
-type TimeoutCallback = Box<dyn Fn() + Send>;
-type ErrorCallback = Box<dyn Fn(&str) + Send>;
-type StateChangeCallback = Box<dyn Fn(CyclicState, CyclicState) + Send>;
-type InputStatusCallback = Box<dyn Fn(u16, u16, u8) + Send>;
+// `Arc`, not `Box`: a callback is cloned out of the registry and invoked with
+// no lock held, so a handler may call back into the controller.
+type InputCallback = Arc<dyn Fn(u16, u16, &[u8]) + Send + Sync>;
+type TimeoutCallback = Arc<dyn Fn() + Send + Sync>;
+type ErrorCallback = Arc<dyn Fn(&str) + Send + Sync>;
+type StateChangeCallback = Arc<dyn Fn(CyclicState, CyclicState) + Send + Sync>;
+type InputStatusCallback = Arc<dyn Fn(u16, u16, u8) + Send + Sync>;
 
 /// Latest input payload for a submodule together with the provider status
 /// (IOPS) the device sent alongside it. Both live under one lock: the payload
@@ -311,6 +313,20 @@ struct Shared {
 impl Shared {
     /// Transition to a new state (no-op if unchanged) and fire the
     /// state-change callback outside the state lock, as `_transition`.
+    /// Clone registered callbacks out of the registry, so they can be invoked
+    /// with no lock held.
+    ///
+    /// Every call site goes through here rather than reading the registry
+    /// directly: holding the lock across a handler parks the receive thread
+    /// the moment a handler reaches back into the controller, and that is a
+    /// rule with four call sites and no compiler to enforce it.
+    ///
+    /// The closure may pick more than one handler, and then they are taken
+    /// under the same acquisition.
+    fn callbacks<T>(&self, pick: impl FnOnce(&Callbacks) -> T) -> T {
+        pick(&plock(&self.callbacks))
+    }
+
     fn transition(&self, new_state: CyclicState) {
         let old = {
             let mut state = plock(&self.state);
@@ -321,15 +337,13 @@ impl Shared {
             *state = new_state;
             old
         };
-        let callbacks = plock(&self.callbacks);
-        if let Some(cb) = &callbacks.on_state_change {
+        if let Some(cb) = self.callbacks(|c| c.on_state_change.clone()) {
             cb(old, new_state);
         }
     }
 
     fn emit_error(&self, message: &str) {
-        let callbacks = plock(&self.callbacks);
-        if let Some(cb) = &callbacks.on_error {
+        if let Some(cb) = self.callbacks(|c| c.on_error.clone()) {
             cb(message);
         }
     }
@@ -462,7 +476,12 @@ impl Shared {
         // Callbacks fire after the input lock is released (the reference calls
         // them under the lock, which the GIL makes safe; here that would
         // deadlock a callback reading input).
-        let want_data = plock(&self.callbacks).on_input_data.is_some();
+        // Both handlers under one acquisition, before the input lock: the
+        // registry is then untouched for the rest of the frame, and the pair
+        // cannot be taken from either side of a re-registration.
+        let (data_cb, status_cb) =
+            self.callbacks(|c| (c.on_input_data.clone(), c.on_input_status.clone()));
+        let want_data = data_cb.is_some();
         let mut updates = Vec::with_capacity(if want_data {
             self.input_iocr.objects.len()
         } else {
@@ -498,13 +517,12 @@ impl Shared {
                 );
             }
         }
-        let callbacks = plock(&self.callbacks);
-        if let Some(cb) = &callbacks.on_input_status {
+        if let Some(cb) = &status_cb {
             for (slot, subslot, iops) in &status_changes {
                 cb(*slot, *subslot, *iops);
             }
         }
-        if let Some(cb) = &callbacks.on_input_data {
+        if let Some(cb) = &data_cb {
             for (slot, subslot, obj_data) in &updates {
                 cb(*slot, *subslot, obj_data);
             }
@@ -569,11 +587,8 @@ impl Shared {
             plock(&self.output_builder).set_all_iocs(IOXS_BAD);
         }
 
-        {
-            let callbacks = plock(&self.callbacks);
-            if let Some(cb) = &callbacks.on_timeout {
-                cb();
-            }
+        if let Some(cb) = self.callbacks(|c| c.on_timeout.clone()) {
+            cb();
         }
 
         // Check for FAULT transition
@@ -919,8 +934,8 @@ impl CyclicController {
 
     /// Register the callback for input data updates, invoked from the RX
     /// thread as `callback(slot, subslot, data)` per received data object.
-    pub fn on_input<F: Fn(u16, u16, &[u8]) + Send + 'static>(&self, callback: F) {
-        plock(&self.shared.callbacks).on_input_data = Some(Box::new(callback));
+    pub fn on_input<F: Fn(u16, u16, &[u8]) + Send + Sync + 'static>(&self, callback: F) {
+        plock(&self.shared.callbacks).on_input_data = Some(Arc::new(callback));
     }
 
     /// Register the callback for provider-status (IOPS) transitions, invoked
@@ -928,23 +943,26 @@ impl CyclicController {
     /// submodule flips between GOOD and BAD. That is how a device disowns its
     /// input data without dropping the AR — the frames keep arriving with
     /// stale payload — so this is the only notification there is.
-    pub fn on_input_status<F: Fn(u16, u16, u8) + Send + 'static>(&self, callback: F) {
-        plock(&self.shared.callbacks).on_input_status = Some(Box::new(callback));
+    pub fn on_input_status<F: Fn(u16, u16, u8) + Send + Sync + 'static>(&self, callback: F) {
+        plock(&self.shared.callbacks).on_input_status = Some(Arc::new(callback));
     }
 
     /// Register the callback for watchdog timeouts.
-    pub fn on_timeout<F: Fn() + Send + 'static>(&self, callback: F) {
-        plock(&self.shared.callbacks).on_timeout = Some(Box::new(callback));
+    pub fn on_timeout<F: Fn() + Send + Sync + 'static>(&self, callback: F) {
+        plock(&self.shared.callbacks).on_timeout = Some(Arc::new(callback));
     }
 
     /// Register the callback for communication errors.
-    pub fn on_error<F: Fn(&str) + Send + 'static>(&self, callback: F) {
-        plock(&self.shared.callbacks).on_error = Some(Box::new(callback));
+    pub fn on_error<F: Fn(&str) + Send + Sync + 'static>(&self, callback: F) {
+        plock(&self.shared.callbacks).on_error = Some(Arc::new(callback));
     }
 
     /// Register the callback for state transitions.
-    pub fn on_state_change<F: Fn(CyclicState, CyclicState) + Send + 'static>(&self, callback: F) {
-        plock(&self.shared.callbacks).on_state_change = Some(Box::new(callback));
+    pub fn on_state_change<F: Fn(CyclicState, CyclicState) + Send + Sync + 'static>(
+        &self,
+        callback: F,
+    ) {
+        plock(&self.shared.callbacks).on_state_change = Some(Arc::new(callback));
     }
 
     /// Parse and process a received raw Ethernet frame. Socket-free port of
@@ -1244,6 +1262,32 @@ mod tests {
         // The steady-state figures stay out of it: an outage is not jitter.
         assert_eq!(stats.rx_interval_count, 0, "no interval counts as steady");
         assert_eq!(stats.max_rx_jitter_us, 0);
+    }
+
+    #[test]
+    fn a_callback_may_call_back_into_the_controller() {
+        // The registry lock is released before a handler runs, so a handler
+        // that touches the controller does not deadlock the receive thread.
+        // Held across the call, this test hangs rather than fails.
+        let c = controller();
+        c.shared.transition(CyclicState::Running);
+
+        // The timeout handler reaches back into the controller, which takes
+        // the same registry lock again. `Mutex` is not reentrant, so holding
+        // it across the call would park the thread here forever.
+        let shared = Arc::clone(&c.shared);
+        c.on_timeout(move || shared.emit_error("re-entered from a handler"));
+
+        let reached = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&reached);
+        c.on_error(move |_| flag.store(true, Ordering::SeqCst));
+
+        c.handle_watchdog_timeout();
+
+        assert!(
+            reached.load(Ordering::SeqCst),
+            "the re-entrant call went through"
+        );
     }
 
     #[test]
