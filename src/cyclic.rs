@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::pcap::RawSocket;
+use crate::pcap::{PacketSource, RawSocket};
 use crate::rt::{
     build_ethernet_frame, parse_ethernet_frame, CyclicDataBuilder, IocrConfig, RtFrame,
     DATA_STATUS_PROVIDER_RUN, DATA_STATUS_STATE, DATA_STATUS_STATION_OK, DATA_STATUS_VALID,
@@ -744,9 +744,8 @@ fn frame_is_alive(frame: &RtFrame) -> bool {
 /// The watchdog half of one receive-loop pass: when nothing has satisfied the
 /// timer for a whole period, count a timeout and re-arm for the next one.
 ///
-/// Split out of [`rx_loop`] so the escalation can be driven without a socket:
-/// the loop's own arrangement makes the interesting case — a device that keeps
-/// sending while disowning its data — unreachable in a test.
+/// Split out of [`rx_loop`] so the escalation can be exercised on its own,
+/// without the loop and its capture around it.
 fn check_receive_watchdog(shared: &Shared, watchdog: Duration) {
     let elapsed = plock(&shared.stats).last_receive_time.elapsed();
     if elapsed > watchdog {
@@ -758,12 +757,12 @@ fn check_receive_watchdog(shared: &Shared, watchdog: Duration) {
 /// Receive loop - processes input frames from the device, as `_rx_loop`.
 /// Uses the 1 ms recv timeout (the reference's rx socket timeout) to check
 /// the watchdog and the run flag between frames.
-fn rx_loop(shared: Arc<Shared>, mut sock: RawSocket) {
+fn rx_loop(shared: Arc<Shared>, mut sock: impl PacketSource) {
     let watchdog = Duration::from_micros(shared.input_iocr.watchdog_time_us());
     plock(&shared.stats).last_receive_time = Instant::now();
 
     while shared.running.load(Ordering::SeqCst) {
-        match sock.recv(Duration::from_millis(1)) {
+        match sock.recv_frame(Duration::from_millis(1)) {
             Ok(Some(data)) => shared.process_input_frame(&data),
             Ok(None) => {}
             Err(e) => {
@@ -1428,6 +1427,142 @@ mod tests {
             reached.load(Ordering::SeqCst),
             "the re-entrant call went through"
         );
+    }
+
+    /// A capture that hands over exactly what a test scripts.
+    ///
+    /// It also moves time: each call back-dates the watchdog's timer, so a
+    /// period of silence can be expressed without a test sleeping through one.
+    struct ScriptedSource {
+        shared: Arc<Shared>,
+        /// Returned on every call until `passes` runs out.
+        step: Box<dyn FnMut() -> Result<Option<Vec<u8>>, String> + Send>,
+        passes: usize,
+        age: Duration,
+    }
+
+    impl PacketSource for ScriptedSource {
+        fn recv_frame(&mut self, _timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+            if self.passes == 0 {
+                self.shared.running.store(false, Ordering::SeqCst);
+                return Ok(None);
+            }
+            self.passes -= 1;
+            plock(&self.shared.stats).last_receive_time = Instant::now() - self.age;
+            (self.step)()
+        }
+    }
+
+    #[test]
+    fn a_source_that_never_goes_idle_still_reaches_fault() {
+        // The decision under test belongs to the loop, not to the escalation:
+        // the watchdog must be consulted on every pass and not only when the
+        // capture handed over nothing. This source never hands over nothing —
+        // which is what a short cycle, or any other station on the segment,
+        // produces — so a loop that only checks when idle never escalates and
+        // this test hangs in RUNNING until the script runs out.
+        let c = controller(); // faults after 3 consecutive timeouts
+        c.shared.transition(CyclicState::Running);
+        c.shared.running.store(true, Ordering::SeqCst);
+
+        let frame = device_frame(false);
+        let source = ScriptedSource {
+            shared: Arc::clone(&c.shared),
+            step: Box::new(move || Ok(Some(frame.clone()))),
+            passes: 3,
+            age: Duration::from_secs(1),
+        };
+
+        rx_loop(Arc::clone(&c.shared), source);
+
+        assert_eq!(c.state(), CyclicState::Fault);
+        assert_eq!(plock(&c.shared.stats).frames_invalid, 3);
+    }
+
+    #[test]
+    fn a_receive_error_ends_the_loop_in_fault() {
+        let c = controller();
+        c.shared.transition(CyclicState::Running);
+        c.shared.running.store(true, Ordering::SeqCst);
+
+        let source = ScriptedSource {
+            shared: Arc::clone(&c.shared),
+            step: Box::new(|| Err("capture handle gone".to_string())),
+            passes: 1,
+            age: Duration::ZERO,
+        };
+
+        rx_loop(Arc::clone(&c.shared), source);
+
+        assert_eq!(
+            c.state(),
+            CyclicState::Fault,
+            "a loop that cannot receive must not leave the link reported as running"
+        );
+    }
+
+    #[test]
+    fn a_socket_torn_down_by_the_shutdown_is_not_reported() {
+        // `stop` clears the run flag while the loop is blocked in the capture,
+        // and tearing the handle down is what makes that call return an error.
+        // Both have to happen with the loop running, or the guard that keeps
+        // quiet about it is never reached: entering with the flag already
+        // clear means the loop body does not execute at all.
+        let c = controller();
+        c.shared.transition(CyclicState::Stopping);
+        c.shared.running.store(true, Ordering::SeqCst);
+
+        let said = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&said);
+        c.on_error(move |_| flag.store(true, Ordering::SeqCst));
+
+        let shared = Arc::clone(&c.shared);
+        let source = ScriptedSource {
+            shared: Arc::clone(&c.shared),
+            step: Box::new(move || {
+                shared.running.store(false, Ordering::SeqCst);
+                Err("capture handle gone".to_string())
+            }),
+            passes: 1,
+            age: Duration::ZERO,
+        };
+
+        rx_loop(Arc::clone(&c.shared), source);
+
+        assert!(
+            !said.load(Ordering::SeqCst),
+            "an orderly stop is not an error"
+        );
+        assert_eq!(c.state(), CyclicState::Stopping);
+        assert!(!c.ever_faulted());
+    }
+
+    #[test]
+    fn a_link_that_was_already_stopping_does_not_fault() {
+        // The second guard: the error is worth reporting — the caller asked
+        // for a stop, not for the handle to break — but a link that was no
+        // longer running cannot die, and faulting here would put an orderly
+        // shutdown on the record as a failure.
+        let c = controller();
+        c.shared.transition(CyclicState::Stopping);
+        c.shared.running.store(true, Ordering::SeqCst);
+
+        let said = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&said);
+        c.on_error(move |_| flag.store(true, Ordering::SeqCst));
+
+        let source = ScriptedSource {
+            shared: Arc::clone(&c.shared),
+            step: Box::new(|| Err("capture handle gone".to_string())),
+            passes: 1,
+            age: Duration::ZERO,
+        };
+
+        rx_loop(Arc::clone(&c.shared), source);
+
+        assert!(said.load(Ordering::SeqCst), "the error is still reported");
+        assert_eq!(c.state(), CyclicState::Stopping);
+        assert!(!c.ever_faulted());
     }
 
     #[test]
