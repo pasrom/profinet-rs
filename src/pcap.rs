@@ -37,6 +37,25 @@ impl fmt::Debug for RawSocket {
     }
 }
 
+/// What a receive loop needs from its capture: one frame at a time, or
+/// nothing within the timeout.
+///
+/// A trait and not just [`RawSocket`], because the loop's own behaviour is
+/// worth a test and a real capture cannot be scripted: opening one needs
+/// privileges, and what arrives on it is whatever the segment happens to be
+/// carrying. The decisions that matter — when the watchdog is consulted, what
+/// a receive error does — are then driven from a sequence a test writes.
+pub trait PacketSource: Send {
+    /// One frame, or `None` when `timeout` passed with nothing to hand over.
+    fn recv_frame(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, String>;
+}
+
+impl PacketSource for RawSocket {
+    fn recv_frame(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+        self.recv(timeout)
+    }
+}
+
 impl RawSocket {
     /// Open a live capture on `iface`. If `ethertype` is set, install the
     /// VLAN-aware BPF filter for it (see [`bpf_filter`]); otherwise all
