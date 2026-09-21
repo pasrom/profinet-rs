@@ -486,7 +486,8 @@ fn cmd_get_param(iface: &str, my_mac: &[u8; 6], target: &str, param: Param) -> R
         Param::Name => (dcp::DCP_OPTION_DEVICE, dcp::DCP_SUBOPTION_DEVICE_NAME),
         Param::Ip => (dcp::DCP_OPTION_IP, dcp::DCP_SUBOPTION_IP_PARAMETER),
     };
-    let request = dcp::get_request(my_mac, &dst, gen_xid()?, option, suboption);
+    let xid = gen_xid()?;
+    let request = dcp::get_request(my_mac, &dst, xid, option, suboption);
 
     let mut sock = RawSocket::open(iface, Some(dcp::PROFINET_ETHERTYPE))?;
     sock.send(&request)?;
@@ -505,7 +506,7 @@ fn cmd_get_param(iface: &str, my_mac: &[u8; 6], target: &str, param: Param) -> R
         if frame.len() < 14 || frame[0..6] != my_mac[..] {
             continue;
         }
-        match dcp::parse_get_response(&frame, option, suboption) {
+        match dcp::parse_get_response(&frame, option, suboption, xid) {
             Ok(Some(value)) => {
                 match param {
                     Param::Name => {
