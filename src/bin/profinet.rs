@@ -15,7 +15,7 @@
 //!   profinet -i en8 cyclic my-device --gsdml dev.xml --cycle-ms 32
 
 use std::process::exit;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -71,6 +71,14 @@ struct Cli {
     /// helper is too old".
     #[arg(short, long, value_name = "IFACE", global = true)]
     interface: Option<String>,
+
+    /// Source IPv4 address to send from, overriding the automatic choice.
+    ///
+    /// The address is normally the one whose network contains the device.
+    /// Pin it here when that is not the right one — two addresses in the same
+    /// network, say, where only one is the address the device knows.
+    #[arg(long, value_name = "IP", global = true, value_parser = parse_ipv4)]
+    source_ip: Option<[u8; 4]>,
 
     /// Discovery timeout in seconds.
     #[arg(short, long, default_value_t = 10)]
@@ -736,12 +744,97 @@ fn resolve_device(iface: &str, target: &str, timeout: Duration) -> Result<dcp::D
     match_device(devices, target).ok_or_else(|| format!("Device {target:?} not found"))
 }
 
+/// The source address pinned with `--source-ip`, or 0 when the choice is left
+/// to the network match.
+///
+/// Process-global because it is settled once from the command line before any
+/// command runs, and the alternative is another argument on three functions
+/// that already carry ten. 0.0.0.0 is not a usable source address, so it
+/// doubles as "unset" without a second flag.
+static SOURCE_IP: AtomicU32 = AtomicU32::new(0);
+
+fn pinned_source_ip() -> Option<[u8; 4]> {
+    match SOURCE_IP.load(Ordering::SeqCst) {
+        0 => None,
+        raw => Some(raw.to_be_bytes()),
+    }
+}
+
+/// The source address for talking to `dst`, and what to report about it.
+fn chosen_source(iface: &str, dst: [u8; 4]) -> Result<([u8; 4], Option<String>), String> {
+    if let Some(ip) = pinned_source_ip() {
+        // The caller overrode the choice on purpose; second-guessing it here
+        // would be noise on every command.
+        return Ok((ip, None));
+    }
+    let chosen = pcap::get_ipv4_toward(iface, dst)?;
+    Ok((chosen.ip, source_address_note(chosen, dst)))
+}
+
+/// What to say when the chosen source address shares no network with the
+/// device, and `None` when it does.
+///
+/// Not an error: the transport addresses the device by MAC and only carries
+/// the IP in the UDP header, so a device on a factory default in nobody's
+/// network answers anyway, and moving it off that address is one of the jobs
+/// here. But it is also exactly what picking the wrong address out of several
+/// looks like, and that failure is otherwise a silent timeout that costs a
+/// packet capture to explain.
+fn source_address_note(chosen: pcap::SourceAddress, dst: [u8; 4]) -> Option<String> {
+    if chosen.reaches_target {
+        return None;
+    }
+    Some(format!(
+        "source address {} shares no network with {}: the device answers only \
+         if it accepts a source outside its own network",
+        s2ip(&chosen.ip).unwrap_or_default(),
+        s2ip(&dst).unwrap_or_default()
+    ))
+}
+
+/// Whether this process speaks the NDJSON protocol on stdout.
+///
+/// It decides where a diagnostic note goes. A stray line on stdout would
+/// corrupt the protocol, and stderr is invisible to a consumer that reads
+/// only the stream — so neither channel is right for both, and the choice has
+/// to be made from what the process is doing. Settled once from the command
+/// line before any command runs.
+static SERVE_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Whether the note about the source address has already gone out.
+///
+/// A session opens more than one transport — the acyclic one and, under
+/// `--cyclic`, the IO one — and each picks a source address. The interface and
+/// the device do not change in between, so the second has nothing to add.
+static SOURCE_NOTE_SAID: AtomicBool = AtomicBool::new(false);
+
+fn report_source_note(note: &str) {
+    if SOURCE_NOTE_SAID.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if SERVE_MODE.load(Ordering::SeqCst) {
+        emit(&warning_line("source_address", note));
+    } else {
+        eprintln!("warning: {note}");
+    }
+}
+
+/// The source address for talking to `dst`, with the note reported on
+/// whichever channel this process can be heard on.
+fn source_address(iface: &str, dst: [u8; 4]) -> Result<[u8; 4], String> {
+    let (ip, note) = chosen_source(iface, dst)?;
+    if let Some(note) = note {
+        report_source_note(&note);
+    }
+    Ok(ip)
+}
+
 /// Transport to the device without establishing an AR: enough for the AR-less
 /// Read Implicit service, which addresses the device by IP only.
 fn rpc_transport(iface: &str, target: &str, timeout: Duration) -> Result<RpcConn, String> {
     let cm_mac = pcap::get_mac(iface)?;
-    let cm_ip = pcap::get_ipv4(iface)?;
     let dev = resolve_device(iface, target, timeout)?;
+    let cm_ip = source_address(iface, dev.ip)?;
     RpcConn::new_raw(
         iface,
         cm_mac,
@@ -907,10 +1000,10 @@ fn cmd_cyclic(
 ) -> Result<i32, String> {
     validate_cycle_ms(cycle_ms)?;
     let cm_mac = pcap::get_mac(iface)?;
-    let cm_ip = pcap::get_ipv4(iface)?;
 
     // Step 1: resolve device via DCP.
     let dev = resolve_device(iface, target, timeout)?;
+    let cm_ip = source_address(iface, dev.ip)?;
     println!(
         "Connecting to {target} ({})...",
         s2ip(&dev.ip).unwrap_or_default()
@@ -2128,7 +2221,6 @@ fn start_cyclic_tier(
 ) -> Result<CyclicTier, String> {
     validate_cycle_ms(cycle_ms)?;
     let cm_mac = pcap::get_mac(iface)?;
-    let cm_ip = pcap::get_ipv4(iface)?;
 
     let device_slots = conn.discover_slots()?;
     let gsdml_device = load_gsdml(gsdml_path)?;
@@ -2213,6 +2305,8 @@ fn start_cyclic_tier(
     thread::sleep(Duration::from_millis(500));
 
     let dev = resolve_device(iface, target, timeout)?;
+    let cm_ip = source_address(iface, dev.ip)?;
+
     let send_clock_factor: u16 = 32;
     let setup = IocrSetup {
         io_slots: io_slots.clone(),
@@ -3285,6 +3379,11 @@ fn safe_shutdown(
 }
 
 fn run(cli: &Cli) -> Result<i32, String> {
+    SERVE_MODE.store(
+        matches!(cli.command, Command::Serve { .. }),
+        Ordering::SeqCst,
+    );
+
     // Answered from the binary alone, so it comes before the interface is
     // resolved and before any socket is opened.
     if matches!(cli.command, Command::Proto) {
@@ -3310,6 +3409,14 @@ fn run(cli: &Cli) -> Result<i32, String> {
         .as_deref()
         .ok_or("--interface <IFACE> is required for this command")?;
     let timeout = Duration::from_secs(cli.timeout);
+    // Settled before any command runs, so every source-address choice below
+    // sees the same answer.
+    if let Some(ip) = cli.source_ip {
+        if ip == [0, 0, 0, 0] {
+            return Err("--source-ip 0.0.0.0 is not a usable source address".to_string());
+        }
+        SOURCE_IP.store(u32::from_be_bytes(ip), Ordering::SeqCst);
+    }
     // The DCP commands need the controller MAC; look it up once up front.
     match &cli.command {
         // Dispatched above, before the interface guard; these arms exist only
@@ -3740,6 +3847,43 @@ mod tests {
         assert_eq!(parse_hex("").unwrap(), Vec::<u8>::new());
         assert!(parse_hex("abc").is_err());
         assert!(parse_hex("zz").is_err());
+    }
+
+    #[test]
+    fn a_pinned_source_address_silences_the_note() {
+        // The note exists to explain a silent timeout. A caller who pinned the
+        // address has already made that call, so repeating it on every command
+        // would be noise.
+        SOURCE_IP.store(u32::from_be_bytes([10, 0, 0, 5]), Ordering::SeqCst);
+        let (ip, note) = chosen_source("no-such-iface", [192, 168, 0, 2]).expect("pinned");
+        assert_eq!(ip, [10, 0, 0, 5]);
+        assert!(note.is_none());
+        // It also short-circuits the interface lookup, which is what makes it
+        // usable when libpcap reports no address at all.
+        SOURCE_IP.store(0, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn the_note_names_both_addresses() {
+        let note = source_address_note(
+            pcap::SourceAddress {
+                ip: [10, 0, 0, 5],
+                reaches_target: false,
+            },
+            [192, 168, 0, 2],
+        )
+        .expect("a note");
+        assert!(note.contains("10.0.0.5"), "{note}");
+        assert!(note.contains("192.168.0.2"), "{note}");
+
+        assert!(source_address_note(
+            pcap::SourceAddress {
+                ip: [192, 168, 0, 7],
+                reaches_target: true,
+            },
+            [192, 168, 0, 2]
+        )
+        .is_none());
     }
 
     #[test]

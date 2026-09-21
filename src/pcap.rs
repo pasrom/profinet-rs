@@ -188,34 +188,22 @@ fn same_network(a: [u8; 4], b: [u8; 4], mask: [u8; 4]) -> bool {
     (0..4).all(|i| a[i] & mask[i] == b[i] & mask[i])
 }
 
+/// The addresses libpcap reports for `iface`, for a caller that makes several
+/// choices from one query.
+pub fn interface_addresses(iface: &str) -> Result<Vec<pcap::Address>, String> {
+    let devices = pcap::Device::list().map_err(|e| format!("pcap device list failed: {e}"))?;
+    devices
+        .into_iter()
+        .find(|d| d.name == iface)
+        .map(|d| d.addresses)
+        .ok_or_else(|| format!("interface {iface:?} not found by pcap"))
+}
+
 /// Source address of `iface` for talking to `dst`, from libpcap's device list
 /// (pcap_findalldevs); needed for the UDP-over-raw-L2 RPC transport
 /// ([`crate::rawudp`]). See [`pick_source_ipv4`] for how the choice is made.
 pub fn get_ipv4_toward(iface: &str, dst: [u8; 4]) -> Result<SourceAddress, String> {
-    let devices = pcap::Device::list().map_err(|e| format!("pcap device list failed: {e}"))?;
-    let dev = devices
-        .into_iter()
-        .find(|d| d.name == iface)
-        .ok_or_else(|| format!("interface {iface:?} not found by pcap"))?;
-    pick_source_ipv4(&dev.addresses, dst)
-        .ok_or_else(|| format!("no IPv4 address on interface {iface:?}"))
-}
-
-/// First IPv4 address of a network interface, from libpcap's device list
-/// (pcap_findalldevs). Prefer [`get_ipv4_toward`] wherever the destination is
-/// known: this one cannot tell which of several addresses reaches it.
-pub fn get_ipv4(iface: &str) -> Result<[u8; 4], String> {
-    let devices = pcap::Device::list().map_err(|e| format!("pcap device list failed: {e}"))?;
-    let dev = devices
-        .into_iter()
-        .find(|d| d.name == iface)
-        .ok_or_else(|| format!("interface {iface:?} not found by pcap"))?;
-    dev.addresses
-        .iter()
-        .find_map(|a| match a.addr {
-            std::net::IpAddr::V4(ip) => Some(ip.octets()),
-            std::net::IpAddr::V6(_) => None,
-        })
+    pick_source_ipv4(&interface_addresses(iface)?, dst)
         .ok_or_else(|| format!("no IPv4 address on interface {iface:?}"))
 }
 

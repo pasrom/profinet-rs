@@ -292,7 +292,7 @@ impl ProfinetDevice {
         timeout: Duration,
     ) -> Result<ProfinetDevice, String> {
         let src_mac = pcap::get_mac(interface)?;
-        let src_ip = pcap::get_ipv4(interface)?;
+        let src_ip = pcap::get_ipv4_toward(interface, info.ip)?.ip;
         Ok(ProfinetDevice::new(
             info, interface, src_mac, src_ip, timeout,
         ))
@@ -341,11 +341,23 @@ impl ProfinetDevice {
     /// Identify-All response.
     pub fn scan(interface: &str, timeout: Duration) -> Result<Vec<ProfinetDevice>, String> {
         let src_mac = pcap::get_mac(interface)?;
-        let src_ip = pcap::get_ipv4(interface)?;
-        Ok(pcap::discover(interface, timeout)?
+        // One source address per device, not one for the scan: a scan can
+        // legitimately turn up devices in different networks, and which of the
+        // interface's addresses reaches one of them says nothing about the
+        // next. The address list is read once and the choice made from it, so
+        // this stays a single query no matter how many devices answered.
+        let addresses = pcap::interface_addresses(interface)?;
+        pcap::discover(interface, timeout)?
             .into_iter()
-            .map(|info| ProfinetDevice::new(info, interface, src_mac, src_ip, timeout))
-            .collect())
+            .map(|info| {
+                let src_ip = pcap::pick_source_ipv4(&addresses, info.ip)
+                    .ok_or_else(|| format!("no IPv4 address on interface {interface:?}"))?
+                    .ip;
+                Ok(ProfinetDevice::new(
+                    info, interface, src_mac, src_ip, timeout,
+                ))
+            })
+            .collect()
     }
 
     // -----------------------------------------------------------------------
