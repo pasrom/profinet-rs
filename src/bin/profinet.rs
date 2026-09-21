@@ -1190,7 +1190,10 @@ fn should_hard_exit(already_shutting_down: bool, safe_to_hard_exit: bool) -> boo
 ///
 /// `Starting`/`Running` are healthy; `Stopping`/`Idle` cannot occur while the
 /// run loop owns the controller.
-fn cyclic_abort_reason(state: CyclicState) -> Option<&'static str> {
+fn cyclic_abort_reason(state: CyclicState, ever_faulted: bool) -> Option<&'static str> {
+    if ever_faulted {
+        return Some("cyclic_fault");
+    }
     match state {
         CyclicState::Fault => Some("cyclic_fault"),
         CyclicState::Stopped => Some("cyclic_stopped"),
@@ -2651,7 +2654,7 @@ fn cmd_serve(
         // instead of "commanding" into a dead AR. The dead-man cannot catch
         // this, it only sees caller silence.
         if let Some(c) = cyclic_ctl.as_ref() {
-            if let Some(reason) = cyclic_abort_reason(c.state()) {
+            if let Some(reason) = cyclic_abort_reason(c.state(), c.ever_faulted()) {
                 break 'run ServeStop::Reason(reason);
             }
         }
@@ -4111,12 +4114,12 @@ mod tests {
         // shutdown instead of driving a dead AR. The dead-man cannot catch
         // this (keepalives into a dead link keep it satisfied).
         assert_eq!(
-            cyclic_abort_reason(CyclicState::Fault),
+            cyclic_abort_reason(CyclicState::Fault, false),
             Some("cyclic_fault"),
             "a watchdog-escalated FAULT must abort to safe shutdown"
         );
         assert_eq!(
-            cyclic_abort_reason(CyclicState::Stopped),
+            cyclic_abort_reason(CyclicState::Stopped, false),
             Some("cyclic_stopped")
         );
         // Healthy / transient states keep the loop running.
@@ -4126,7 +4129,32 @@ mod tests {
             CyclicState::Idle,
             CyclicState::Stopping,
         ] {
-            assert_eq!(cyclic_abort_reason(ok), None, "{ok:?} must not abort");
+            assert_eq!(
+                cyclic_abort_reason(ok, false),
+                None,
+                "{ok:?} must not abort"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fault_that_already_recovered_still_aborts() {
+        // The cyclic layer leaves FAULT again on the next frame it accepts,
+        // and the run loop samples the state at intervals that an acyclic
+        // read can stretch to seconds. Without the latch the same outage
+        // would end the session or not depending on that timing, and the
+        // documented meaning of the fault line — the link is gone, rebuild
+        // the session — would not hold.
+        for recovered in [
+            CyclicState::Running,
+            CyclicState::Starting,
+            CyclicState::Idle,
+        ] {
+            assert_eq!(
+                cyclic_abort_reason(recovered, true),
+                Some("cyclic_fault"),
+                "{recovered:?} after a fault must still abort"
+            );
         }
     }
 

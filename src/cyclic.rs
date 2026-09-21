@@ -293,6 +293,14 @@ struct Shared {
     max_consecutive_timeouts: u32,
     state: Mutex<CyclicState>,
     running: AtomicBool,
+    /// Whether the link has ever been declared dead during this run.
+    ///
+    /// The state itself does not stay in FAULT: the next accepted frame pulls
+    /// it back to RUNNING, so a consumer that samples the state at intervals
+    /// can miss the whole episode. This is the fact that does not go away, and
+    /// it lives here rather than in [`CyclicStats`] because `reset` runs on
+    /// `start` and would clear it along with the counters.
+    ever_faulted: AtomicBool,
     cycle_counter: Mutex<u16>,
     output_builder: Mutex<CyclicDataBuilder>,
     input_data: Mutex<HashMap<(u16, u16), InputEntry>>,
@@ -337,6 +345,9 @@ impl Shared {
             *state = new_state;
             old
         };
+        if new_state == CyclicState::Fault {
+            self.ever_faulted.store(true, Ordering::SeqCst);
+        }
         if let Some(cb) = self.callbacks(|c| c.on_state_change.clone()) {
             cb(old, new_state);
         }
@@ -842,6 +853,7 @@ impl CyclicController {
                 max_consecutive_timeouts,
                 state: Mutex::new(CyclicState::Idle),
                 running: AtomicBool::new(false),
+                ever_faulted: AtomicBool::new(false),
                 cycle_counter: Mutex::new(0),
                 output_builder: Mutex::new(output_builder),
                 input_data: Mutex::new(HashMap::new()),
@@ -880,6 +892,18 @@ impl CyclicController {
     /// Current controller state.
     pub fn state(&self) -> CyclicState {
         *plock(&self.shared.state)
+    }
+
+    /// Whether the link has been declared dead at any point since [`start`].
+    ///
+    /// [`CyclicController::state`] answers what is true now, which for a fault
+    /// is a poor question: the next accepted frame pulls the state back to
+    /// running, so a consumer polling at intervals can watch a link die and
+    /// come back without ever seeing it. This answers what happened.
+    ///
+    /// [`start`]: CyclicController::start
+    pub fn ever_faulted(&self) -> bool {
+        self.shared.ever_faulted.load(Ordering::SeqCst)
     }
 
     /// True if the controller is currently running.
@@ -1032,6 +1056,7 @@ impl CyclicController {
         self.shared.transition(CyclicState::Starting);
         self.shared.running.store(true, Ordering::SeqCst);
         plock(&self.shared.stats).reset();
+        self.shared.ever_faulted.store(false, Ordering::SeqCst);
         *plock(&self.shared.last_rx_cycle_counter) = None;
 
         // Create separate TX and RX sockets
@@ -1361,6 +1386,22 @@ mod tests {
             plock(&c.shared.stats).last_receive_time > armed,
             "a pending diagnosis must not look like a dead link"
         );
+    }
+
+    #[test]
+    fn a_fault_is_remembered_after_the_link_recovers() {
+        // The state does not stay in FAULT — the next accepted frame pulls it
+        // back — so a consumer polling the state can watch a link die and come
+        // back without ever seeing it. The controller remembers.
+        let c = controller();
+        c.shared.transition(CyclicState::Running);
+        assert!(!c.ever_faulted());
+
+        c.shared.transition(CyclicState::Fault);
+        c.process_input_frame(&device_frame(true));
+
+        assert_eq!(c.state(), CyclicState::Running, "the link recovered");
+        assert!(c.ever_faulted(), "and the fault is still on the record");
     }
 
     #[test]
