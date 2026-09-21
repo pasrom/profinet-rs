@@ -142,14 +142,22 @@ pub struct CyclicStats {
     pub min_cycle_time_us: u64,
     /// Maximum observed send interval (microseconds).
     pub max_cycle_time_us: u64,
-    /// Actual arrival interval of the last received frame (microseconds).
+    /// Interval between the last two ACCEPTED frames (microseconds). Frames
+    /// the device marks invalid do not update it, and unlike the jitter
+    /// figures it is written for a disturbed interval too.
     pub last_rx_interval_us: u64,
-    /// Maximum observed RECEIVE jitter: deviation of the inter-arrival interval
-    /// of received frames from the target cycle. Measured on the RX path.
+    /// Maximum observed RECEIVE jitter: deviation from the target cycle of an
+    /// undisturbed interval between two accepted frames. Measured on the RX
+    /// path; see [`CyclicStats::interval_disturbed`] for what it leaves out.
     pub max_rx_jitter_us: u64,
-    /// Minimum observed receive inter-arrival interval (microseconds).
+    /// Shortest undisturbed interval between two accepted frames
+    /// (microseconds).
     pub min_rx_interval_us: u64,
-    /// Maximum observed receive inter-arrival interval (microseconds).
+    /// Longest gap between two accepted frames (microseconds). Unlike the
+    /// jitter figures it is recorded across watchdog timeouts, because the
+    /// whole point of the longest gap is the silence a timeout represents:
+    /// bounded at one watchdog period it could not tell a slow link from one
+    /// that stopped.
     pub max_rx_interval_us: u64,
     /// Sum of receive intervals, for [`CyclicStats::avg_rx_interval_us`].
     pub rx_interval_sum_us: u64,
@@ -165,6 +173,20 @@ pub struct CyclicStats {
     /// invalid frames at cycle rate holds the watchdog open forever and the
     /// link never escalates.
     pub last_receive_time: Instant,
+    /// Whether anything has disturbed the stretch since the last accepted
+    /// frame: a watchdog timeout, or a frame the device marked invalid.
+    ///
+    /// The jitter figures describe the steady state and take only undisturbed
+    /// intervals. `consecutive_timeouts == 0` used to serve as that test,
+    /// because the interval was measured between received frames and a run of
+    /// invalid ones could not open a gap. Measuring between ACCEPTED frames
+    /// broke that equivalence: a run of invalid frames shorter than one
+    /// watchdog period opens a gap while no timeout is ever counted.
+    pub interval_disturbed: bool,
+    /// Arrival of the last ACCEPTED frame, or `None` before the first one.
+    /// Separate from `last_receive_time` because that one is re-armed on every
+    /// watchdog period, which would cap every measured gap at one period.
+    pub last_accepted_time: Option<Instant>,
     /// Current streak of consecutive watchdog timeouts.
     pub consecutive_timeouts: u32,
     /// Sum of observed cycle times, for [`CyclicStats::avg_cycle_time_us`].
@@ -195,6 +217,8 @@ impl CyclicStats {
             rx_interval_sum_us: 0,
             rx_interval_count: 0,
             last_receive_time: Instant::now(),
+            last_accepted_time: None,
+            interval_disturbed: false,
             consecutive_timeouts: 0,
             cycle_time_sum_us: 0,
             cycle_count: 0,
@@ -380,26 +404,37 @@ impl Shared {
             let now = Instant::now();
             let target_us = self.input_iocr.cycle_time_us();
             let mut stats = plock(&self.stats);
-            // Measure the arrival interval only between consecutive received
-            // frames: skip the first frame and any interval spanning a
-            // watchdog timeout (consecutive_timeouts > 0), which would be an
-            // outlier rather than steady-state RX jitter.
-            if stats.frames_received > 0 && stats.consecutive_timeouts == 0 {
-                let interval_us = (now - stats.last_receive_time).as_micros() as u64;
-                stats.last_rx_interval_us = interval_us;
-                stats.max_rx_jitter_us =
-                    stats.max_rx_jitter_us.max(interval_us.abs_diff(target_us));
-                stats.min_rx_interval_us = stats.min_rx_interval_us.min(interval_us);
-                stats.max_rx_interval_us = stats.max_rx_interval_us.max(interval_us);
-                stats.rx_interval_sum_us += interval_us;
-                stats.rx_interval_count += 1;
-            }
             stats.frames_received += 1;
+
             // Only an accepted frame is liveness. An invalid one is counted
-            // and otherwise leaves the watchdog timer where it was.
+            // and otherwise changes nothing here: it must not satisfy the
+            // watchdog, and the gap it sits in is still open.
             if valid {
+                if let Some(previous) = stats.last_accepted_time {
+                    let interval_us = (now - previous).as_micros() as u64;
+                    stats.last_rx_interval_us = interval_us;
+                    // The longest gap is recorded whatever happened in it —
+                    // that silence is the measurement.
+                    stats.max_rx_interval_us = stats.max_rx_interval_us.max(interval_us);
+
+                    // The jitter figures describe the steady state, so a
+                    // disturbed interval is left out of them: an outage or a
+                    // run of disowned frames is not a late frame.
+                    if !stats.interval_disturbed {
+                        stats.max_rx_jitter_us =
+                            stats.max_rx_jitter_us.max(interval_us.abs_diff(target_us));
+                        stats.min_rx_interval_us = stats.min_rx_interval_us.min(interval_us);
+                        stats.rx_interval_sum_us += interval_us;
+                        stats.rx_interval_count += 1;
+                    }
+                }
+                stats.last_accepted_time = Some(now);
                 stats.last_receive_time = now;
                 stats.consecutive_timeouts = 0;
+                stats.interval_disturbed = false;
+            } else {
+                // The stretch this frame sits in is no longer steady state.
+                stats.interval_disturbed = true;
             }
         }
 
@@ -522,6 +557,7 @@ impl Shared {
             let mut stats = plock(&self.stats);
             stats.frames_missed += 1;
             stats.consecutive_timeouts += 1;
+            stats.interval_disturbed = true;
             stats.consecutive_timeouts
         };
 
@@ -1136,12 +1172,74 @@ mod tests {
             armed,
             "an invalid frame must not re-arm the watchdog timer"
         );
+        assert_eq!(plock(&c.shared.stats).last_accepted_time, None);
 
         c.process_input_frame(&device_frame(true));
         assert!(
             plock(&c.shared.stats).last_receive_time > armed,
             "a valid frame re-arms it"
         );
+    }
+
+    #[test]
+    fn the_longest_gap_survives_a_watchdog_timeout() {
+        let c = controller();
+
+        // Drive the real sequence rather than hand-setting the outcome: an
+        // accepted frame, then the watchdog firing twice, then the frame that
+        // ends the outage. What this pins is that the timeout re-arms
+        // `last_receive_time` and leaves `last_accepted_time` alone — the
+        // invariant the whole measurement rests on, and the one a plausible
+        // wrong implementation breaks without any test noticing.
+        c.process_input_frame(&device_frame(true));
+        plock(&c.shared.stats).last_accepted_time =
+            Some(Instant::now() - Duration::from_millis(500));
+
+        c.handle_watchdog_timeout();
+        c.handle_watchdog_timeout();
+
+        c.process_input_frame(&device_frame(true));
+
+        let stats = plock(&c.shared.stats);
+        assert!(
+            stats.max_rx_interval_us >= 500_000,
+            "the gap spanning the outage must be recorded, got {}us",
+            stats.max_rx_interval_us
+        );
+        assert!(
+            stats.last_rx_interval_us >= 500_000,
+            "the last interval is the one that ended the outage"
+        );
+        // The steady-state figures stay out of it: an outage is not jitter.
+        assert_eq!(stats.rx_interval_count, 0, "no interval counts as steady");
+        assert_eq!(stats.max_rx_jitter_us, 0);
+    }
+
+    #[test]
+    fn a_run_of_disowned_frames_stays_out_of_the_jitter_figures() {
+        // A run of invalid frames shorter than one watchdog period counts no
+        // timeout at all, so `consecutive_timeouts` stays 0. It still opens a
+        // gap between the accepted frames on either side, and feeding that gap
+        // to the jitter figures would report an outage as steady-state jitter.
+        let c = controller();
+        c.process_input_frame(&device_frame(true));
+        plock(&c.shared.stats).last_accepted_time =
+            Some(Instant::now() - Duration::from_millis(200));
+
+        c.process_input_frame(&device_frame(false));
+        c.process_input_frame(&device_frame(true));
+
+        let stats = plock(&c.shared.stats);
+        assert_eq!(stats.consecutive_timeouts, 0, "no timeout was involved");
+        assert!(
+            stats.max_rx_interval_us >= 200_000,
+            "the gap is still the longest one seen"
+        );
+        assert_eq!(
+            stats.rx_interval_count, 0,
+            "a disturbed interval is not steady-state jitter"
+        );
+        assert_eq!(stats.max_rx_jitter_us, 0);
     }
 
     #[test]
