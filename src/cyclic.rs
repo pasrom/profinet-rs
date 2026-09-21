@@ -715,8 +715,24 @@ fn rx_loop(shared: Arc<Shared>, mut sock: RawSocket) {
             Ok(Some(data)) => shared.process_input_frame(&data),
             Ok(None) => {}
             Err(e) => {
+                // Leaving the loop ends the only thing that watches this
+                // link. Without the transition the controller would keep
+                // reporting RUNNING for the rest of the session while no
+                // frame is ever received again and no watchdog ever runs:
+                // permanently deaf, and saying it is fine. A caller polling
+                // the state, and the abort that hangs off it, would never
+                // learn. The socket is gone either way, so FAULT is the
+                // truthful state, not a pessimistic one.
                 if shared.running.load(Ordering::SeqCst) {
                     shared.emit_error(&format!("RX error: {e}"));
+                    // Only a link that was up can die. `stop` moves the state
+                    // to Stopping before it clears the run flag, so a socket
+                    // torn down in that window would otherwise be recorded as
+                    // a fault on an orderly shutdown. Same guard the watchdog
+                    // escalation uses.
+                    if *plock(&shared.state) == CyclicState::Running {
+                        shared.transition(CyclicState::Fault);
+                    }
                 }
                 break;
             }
