@@ -2335,7 +2335,7 @@ fn host_unix_us() -> u128 {
 /// Wire protocol version of the `serve` NDJSON contract. A consumer that
 /// understands a different one must refuse rather than misread: the two
 /// programs ship separately and can drift apart.
-const SERVE_PROTO: u32 = 6;
+const SERVE_PROTO: u32 = 7;
 
 /// One parsed request from the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -4375,7 +4375,7 @@ mod tests {
         assert_eq!(
             hello_line("demo", true, 30, false, 6),
             format!(
-                r#"{{"proto":6,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
+                r#"{{"proto":7,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );
