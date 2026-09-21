@@ -1362,6 +1362,7 @@ enum Tag {
     Deadman,
     Error,
     Hello,
+    InputStatus,
     Ok,
     Output,
     Pong,
@@ -1870,6 +1871,38 @@ fn cyclic_state_line(host_us: u128, from: &str, to: &str) -> String {
     })
 }
 
+/// `{"type":"input_status",..}` — the device changed its mind about whether a
+/// submodule's input data is its own.
+///
+/// A device can keep the link healthy at the frame level and still disown one
+/// submodule's data through its provider status, when a module is pulled, a
+/// sensor faults, or its application stops. The cyclic lines for that
+/// submodule simply stop, which on its own is indistinguishable from data that
+/// has not changed. This is the notification that distinguishes them.
+#[derive(Serialize)]
+struct InputStatus {
+    #[serde(rename = "type")]
+    tag: Tag,
+    host_us: u128,
+    slot: u16,
+    subslot: u16,
+    /// The provider status byte as the device sent it.
+    iops: u8,
+    /// Whether the device now owns this submodule's data.
+    good: bool,
+}
+
+fn input_status_line(host_us: u128, slot: u16, subslot: u16, iops: u8) -> String {
+    json_line(&InputStatus {
+        tag: Tag::InputStatus,
+        host_us,
+        slot,
+        subslot,
+        iops,
+        good: iops & IOXS_DATA_STATE_GOOD != 0,
+    })
+}
+
 /// `{"type":"control_active",..}` — commanding is possible and this is what it
 /// may drive. Goes out even with an all-zero mask: that is how a consumer
 /// learns nothing has been armed.
@@ -2235,6 +2268,9 @@ fn start_cyclic_tier(
     // then went nowhere. What reached the caller was the aftermath, every
     // command refused "in fault state", which says what is blocked but not
     // what happened or when. Both now go out like any other event.
+    cyclic.on_input_status(|slot, subslot, iops| {
+        emit(&input_status_line(host_unix_us(), slot, subslot, iops));
+    });
     cyclic.on_error(|msg| emit(&error_msg_line(msg)));
     cyclic.on_state_change(|from, to| {
         emit(&cyclic_state_line(
@@ -4397,6 +4433,16 @@ mod tests {
         assert_eq!(
             status_line(1, 11, 12, 13, 14, 15, 4),
             r#"{"type":"status","host_us":1,"tx":11,"rx":12,"missed":13,"invalid":14,"max_rx_gap_us":15,"out_byte":4}"#
+        );
+        // Both directions of the provider status, since `good` is derived
+        // rather than passed in.
+        assert_eq!(
+            input_status_line(1, 1, 2, 0x80),
+            r#"{"type":"input_status","host_us":1,"slot":1,"subslot":2,"iops":128,"good":true}"#
+        );
+        assert_eq!(
+            input_status_line(1, 1, 2, 0x00),
+            r#"{"type":"input_status","host_us":1,"slot":1,"subslot":2,"iops":0,"good":false}"#
         );
 
         // Shutdown.
