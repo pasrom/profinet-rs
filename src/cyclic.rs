@@ -689,6 +689,20 @@ fn tx_loop(shared: Arc<Shared>, mut sock: RawSocket) -> RawSocket {
     sock
 }
 
+/// The watchdog half of one receive-loop pass: when nothing has satisfied the
+/// timer for a whole period, count a timeout and re-arm for the next one.
+///
+/// Split out of [`rx_loop`] so the escalation can be driven without a socket:
+/// the loop's own arrangement makes the interesting case — a device that keeps
+/// sending while disowning its data — unreachable in a test.
+fn check_receive_watchdog(shared: &Shared, watchdog: Duration) {
+    let elapsed = plock(&shared.stats).last_receive_time.elapsed();
+    if elapsed > watchdog {
+        shared.handle_watchdog_timeout();
+        plock(&shared.stats).last_receive_time = Instant::now();
+    }
+}
+
 /// Receive loop - processes input frames from the device, as `_rx_loop`.
 /// Uses the 1 ms recv timeout (the reference's rx socket timeout) to check
 /// the watchdog and the run flag between frames.
@@ -699,15 +713,7 @@ fn rx_loop(shared: Arc<Shared>, mut sock: RawSocket) {
     while shared.running.load(Ordering::SeqCst) {
         match sock.recv(Duration::from_millis(1)) {
             Ok(Some(data)) => shared.process_input_frame(&data),
-            Ok(None) => {
-                // Check watchdog
-                let elapsed = plock(&shared.stats).last_receive_time.elapsed();
-                if elapsed > watchdog {
-                    shared.handle_watchdog_timeout();
-                    // Reset timer
-                    plock(&shared.stats).last_receive_time = Instant::now();
-                }
-            }
+            Ok(None) => {}
             Err(e) => {
                 if shared.running.load(Ordering::SeqCst) {
                     shared.emit_error(&format!("RX error: {e}"));
@@ -715,6 +721,15 @@ fn rx_loop(shared: Arc<Shared>, mut sock: RawSocket) {
                 break;
             }
         }
+
+        // Every pass, not only the ones where the socket went idle. The
+        // capture is filtered on the PROFINET EtherType alone, so every frame
+        // from every station on the segment — and our own transmissions —
+        // arrives here and is discarded in software. Checking the watchdog
+        // only when nothing arrived made the time to escalate a function of
+        // foreign traffic: a busy segment, or a short enough cycle, and the
+        // check never ran at all.
+        check_receive_watchdog(&shared, watchdog);
     }
 }
 
@@ -1213,6 +1228,28 @@ mod tests {
         // The steady-state figures stay out of it: an outage is not jitter.
         assert_eq!(stats.rx_interval_count, 0, "no interval counts as steady");
         assert_eq!(stats.max_rx_jitter_us, 0);
+    }
+
+    #[test]
+    fn a_device_that_disowns_its_data_still_escalates_to_fault() {
+        // The end-to-end claim: a device sending at cycle rate with its data
+        // marked invalid must reach FAULT. Every frame arrives, so the receive
+        // loop never sees an idle socket — which is why the watchdog check
+        // cannot live in the idle branch.
+        let c = controller(); // faults after 3 consecutive timeouts
+        c.shared.transition(CyclicState::Running);
+        let watchdog = Duration::from_millis(10);
+
+        for _ in 0..3 {
+            // A period's worth of time has passed, and the device spent it
+            // sending frames it disowns.
+            plock(&c.shared.stats).last_receive_time = Instant::now() - Duration::from_millis(50);
+            c.process_input_frame(&device_frame(false));
+            check_receive_watchdog(&c.shared, watchdog);
+        }
+
+        assert_eq!(c.state(), CyclicState::Fault);
+        assert_eq!(plock(&c.shared.stats).frames_invalid, 3);
     }
 
     #[test]
