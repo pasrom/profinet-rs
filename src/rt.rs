@@ -119,6 +119,12 @@ impl RtFrame {
     pub fn is_primary(&self) -> bool {
         self.data_status & DATA_STATUS_STATE != 0
     }
+
+    /// True if the receiver was told to disregard this frame (DataStatus
+    /// bit 7).
+    pub fn is_ignored(&self) -> bool {
+        self.data_status & DATA_STATUS_IGNORE != 0
+    }
 }
 
 /// Single IO data object within C_SDU (IODataObject): one piece of process
