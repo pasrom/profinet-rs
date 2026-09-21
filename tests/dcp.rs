@@ -4,7 +4,8 @@
 
 use profinet_rs::dcp::{
     identify_all_request, parse_identify_response, set_ip_request, set_name_request,
-    set_name_request_qualified, DcpDevice,
+    set_name_request_qualified, DcpDevice, DCP_IDENTIFY_RESPONSE_FRAME_ID, DCP_SERVICE_ID_IDENTIFY,
+    DCP_SERVICE_TYPE_RESPONSE_SUCCESS, PROFINET_ETHERTYPE,
 };
 
 const SRC_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
@@ -110,19 +111,43 @@ fn resp_block(option: u8, suboption: u8, status: u16, payload: &[u8]) -> Vec<u8>
     out
 }
 
-fn response_frame(blocks: &[u8]) -> Vec<u8> {
+/// Ethernet + DCP frame from the device to us: dst ++ src ++ EtherType ++
+/// frame_id ++ service_id ++ service_type ++ xid ++ resp ++ len ++ blocks.
+/// Every frame these tests feed the parsers has this shape; what distinguishes
+/// them is the frame ID, the service and the blocks.
+fn dcp_frame(
+    dst: &[u8; 6],
+    src: &[u8; 6],
+    frame_id: u16,
+    service_id: u8,
+    service_type: u8,
+    xid: u32,
+    blocks: &[u8],
+) -> Vec<u8> {
     let mut frame = Vec::new();
-    frame.extend_from_slice(&SRC_MAC); // dst: us
-    frame.extend_from_slice(&DEV_MAC); // src: device
-    frame.extend_from_slice(&0x8892u16.to_be_bytes());
-    frame.extend_from_slice(&0xFEFFu16.to_be_bytes()); // frame_id
-    frame.push(0x05); // service_id IDENTIFY
-    frame.push(0x01); // service_type RESPONSE
-    frame.extend_from_slice(&XID.to_be_bytes());
+    frame.extend_from_slice(dst);
+    frame.extend_from_slice(src);
+    frame.extend_from_slice(&PROFINET_ETHERTYPE.to_be_bytes());
+    frame.extend_from_slice(&frame_id.to_be_bytes());
+    frame.push(service_id);
+    frame.push(service_type);
+    frame.extend_from_slice(&xid.to_be_bytes());
     frame.extend_from_slice(&0u16.to_be_bytes()); // resp
     frame.extend_from_slice(&(blocks.len() as u16).to_be_bytes());
     frame.extend_from_slice(blocks);
     frame
+}
+
+fn response_frame(blocks: &[u8]) -> Vec<u8> {
+    dcp_frame(
+        &SRC_MAC,
+        &DEV_MAC,
+        DCP_IDENTIFY_RESPONSE_FRAME_ID,
+        DCP_SERVICE_ID_IDENTIFY,
+        DCP_SERVICE_TYPE_RESPONSE_SUCCESS,
+        XID,
+        blocks,
+    )
 }
 
 #[test]
@@ -251,16 +276,6 @@ mod cli_builders {
     /// Build a minimal Ethernet+DCP SET response carrying a Control/Response
     /// block (option 5, suboption 4) with the given block error byte.
     fn set_response_frame(block_error: u8) -> Vec<u8> {
-        let mut f = Vec::new();
-        f.extend_from_slice(&S); // dst = our MAC
-        f.extend_from_slice(&D); // src = device
-        f.extend_from_slice(&0x8892u16.to_be_bytes());
-        // DCP header: frame_id, service_id=SET, service_type=RESPONSE_SUCCESS.
-        f.extend_from_slice(&0xfefdu16.to_be_bytes());
-        f.push(DCP_SERVICE_ID_SET);
-        f.push(DCP_SERVICE_TYPE_RESPONSE_SUCCESS);
-        f.extend_from_slice(&X.to_be_bytes());
-        f.extend_from_slice(&0u16.to_be_bytes()); // resp
         let block = [
             DCP_OPTION_CONTROL,
             DCP_SUBOPTION_CONTROL_RESPONSE,
@@ -271,9 +286,15 @@ mod cli_builders {
             block_error,
             0x00,
         ];
-        f.extend_from_slice(&(block.len() as u16).to_be_bytes());
-        f.extend_from_slice(&block);
-        f
+        super::dcp_frame(
+            &S,
+            &D,
+            DCP_GET_SET_FRAME_ID,
+            DCP_SERVICE_ID_SET,
+            DCP_SERVICE_TYPE_RESPONSE_SUCCESS,
+            X,
+            &block,
+        )
     }
 
     #[test]
