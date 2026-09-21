@@ -155,8 +155,15 @@ pub struct CyclicStats {
     pub rx_interval_sum_us: u64,
     /// Number of measured receive intervals.
     pub rx_interval_count: u64,
-    /// Timestamp of last received frame. Initialized to now to avoid a
-    /// spurious watchdog timeout on the first check (the reference's BUG-7).
+    /// When the receive watchdog was last satisfied or re-armed. Initialized
+    /// to now to avoid a spurious timeout on the first check (the reference's
+    /// BUG-7), advanced by an accepted frame, and re-armed by the timeout
+    /// handler so the next period is measured from there.
+    ///
+    /// This is the watchdog's own timer, not a record of arrivals: a frame the
+    /// device marks invalid must not touch it, or a device that keeps sending
+    /// invalid frames at cycle rate holds the watchdog open forever and the
+    /// link never escalates.
     pub last_receive_time: Instant,
     /// Current streak of consecutive watchdog timeouts.
     pub consecutive_timeouts: u32,
@@ -360,7 +367,6 @@ impl Shared {
             return;
         }
 
-        // Update receive time / counters and measure the receive jitter.
         // Validity decides whether this frame may feed the liveness signals.
         // A device that keeps sending frames marked INVALID (provider stopped,
         // data BAD/substitute) must NOT keep the watchdog satisfied or pull the
@@ -388,9 +394,11 @@ impl Shared {
                 stats.rx_interval_sum_us += interval_us;
                 stats.rx_interval_count += 1;
             }
-            stats.last_receive_time = now;
             stats.frames_received += 1;
+            // Only an accepted frame is liveness. An invalid one is counted
+            // and otherwise leaves the watchdog timer where it was.
             if valid {
+                stats.last_receive_time = now;
                 stats.consecutive_timeouts = 0;
             }
         }
@@ -1109,6 +1117,31 @@ mod tests {
         c.process_input_frame(&device_frame(true));
         assert_eq!(plock(&c.shared.stats).consecutive_timeouts, 0);
         assert_eq!(c.state(), CyclicState::Running);
+    }
+
+    #[test]
+    fn an_invalid_frame_does_not_re_arm_the_receive_watchdog() {
+        // `consecutive_timeouts` is not what the watchdog reads. The rx loop
+        // compares `last_receive_time` against the watchdog period, so that is
+        // the field an invalid frame must leave alone — otherwise a device
+        // streaming invalid frames at cycle rate keeps the timer from ever
+        // expiring and the escalation to FAULT never happens at all.
+        let c = controller();
+        let armed = Instant::now() - Duration::from_secs(1);
+        plock(&c.shared.stats).last_receive_time = armed;
+
+        c.process_input_frame(&device_frame(false));
+        assert_eq!(
+            plock(&c.shared.stats).last_receive_time,
+            armed,
+            "an invalid frame must not re-arm the watchdog timer"
+        );
+
+        c.process_input_frame(&device_frame(true));
+        assert!(
+            plock(&c.shared.stats).last_receive_time > armed,
+            "a valid frame re-arms it"
+        );
     }
 
     #[test]
