@@ -51,6 +51,27 @@ pub const CONTROL_CMD_PRM_BEGIN: u16 = 0x0040;
 /// IOCRBlockRes block type (PNIOCRBlockRes.BLOCK_TYPE).
 pub const IOCR_BLOCK_RES: u16 = 0x8102;
 
+/// ModuleDiffBlock block type. The device returns it in the connect response to
+/// say what it really has in each slot, and who owns it.
+pub const MODULE_DIFF_BLOCK: u16 = 0x8104;
+
+/// `SubmoduleState.ARInfo` value meaning the submodule belongs to the AR being
+/// established. Any other value means the device kept it for someone else, and
+/// then the cyclic frames carry substitute data with IOPS bad -- an AR that
+/// looks fully established and delivers nothing.
+pub const AR_INFO_OK: u16 = 0;
+
+/// `SubmoduleState.ARInfo` value seen when another IO-controller still owns the
+/// submodule. A Siemens CPU keeps ownership even in STOP, so "the PLC is
+/// stopped" is not the same as "the device is free".
+pub const AR_INFO_LOCKED_BY_IOC: u16 = 3;
+
+/// `SubmoduleState` bit 15, the format indicator. Set, the word is the run of
+/// named fields ARInfo and IdentInfo are part of. Clear, the remaining bits
+/// carry a different coding, and reading those two out of them is reading
+/// fields that are not there.
+pub const SUBMODULE_STATE_HAS_FIELDS: u16 = 0x8000;
+
 fn rd_u16(data: &[u8], off: usize, le: bool) -> u16 {
     let b = [data[off], data[off + 1]];
     if le {
@@ -301,6 +322,132 @@ pub fn parse_iocr_block_res(response_data: &[u8], iocr_type: u16) -> u16 {
     0
 }
 
+/// One submodule as the device reported it in the ModuleDiffBlock: what is
+/// really plugged there, and what state the device gives it in this AR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubmoduleDiff {
+    pub slot: u16,
+    pub subslot: u16,
+    pub submodule_ident: u32,
+    /// Raw `SubmoduleState`; the accessors below name the fields that decide
+    /// whether this AR will receive the submodule's data at all.
+    pub state: u16,
+}
+
+impl SubmoduleDiff {
+    /// Does the state word carry the named fields at all? See
+    /// [`SUBMODULE_STATE_HAS_FIELDS`]; the two accessors below answer `None`
+    /// when it does not, because a number read out of the other coding would
+    /// be a field this word never contained.
+    pub fn has_fields(self) -> bool {
+        self.state & SUBMODULE_STATE_HAS_FIELDS != 0
+    }
+
+    /// `IdentInfo`, bits 14..11. Zero means the submodule is the one the
+    /// ExpectedSubmoduleBlock asked for.
+    pub fn ident_info(self) -> Option<u16> {
+        self.has_fields().then_some((self.state >> 11) & 0xF)
+    }
+
+    /// `ARInfo`, bits 10..7. See [`AR_INFO_OK`].
+    pub fn ar_info(self) -> Option<u16> {
+        self.has_fields().then_some((self.state >> 7) & 0xF)
+    }
+
+    /// Is the submodule held for someone else? Only this warrants telling the
+    /// caller to go and release the device.
+    pub fn is_locked(self) -> bool {
+        self.ar_info().is_some_and(|ar_info| ar_info != AR_INFO_OK)
+    }
+
+    /// Will this AR actually be given the submodule's data?
+    pub fn is_ours(self) -> bool {
+        match (self.ar_info(), self.ident_info()) {
+            (Some(ar_info), Some(ident_info)) => ar_info == AR_INFO_OK && ident_info == 0,
+            // The word is in the other format, so nothing in it says the
+            // submodule was withheld. Refusing on that would break a connect
+            // the device never objected to.
+            _ => true,
+        }
+    }
+
+    /// Why not, in words, for the message the caller prints.
+    pub fn reason(self) -> String {
+        let (Some(ar_info), Some(ident_info)) = (self.ar_info(), self.ident_info()) else {
+            return format!(
+                "SubmoduleState 0x{:04X}, not in the field format",
+                self.state
+            );
+        };
+        let owner = match ar_info {
+            AR_INFO_OK => "owned by this AR".to_string(),
+            AR_INFO_LOCKED_BY_IOC => "locked by another IO-controller".to_string(),
+            other => format!("ARInfo 0x{other:X}"),
+        };
+        if ident_info == 0 {
+            owner
+        } else {
+            format!("{owner}, IdentInfo 0x{ident_info:X} (not the submodule we asked for)")
+        }
+    }
+}
+
+/// Walk the connect-response blocks for the ModuleDiffBlock (0x8104) and return
+/// every submodule it lists. Nesting is APIs -> modules -> submodules, each
+/// level counted by a `u16`; every read is bounded by the block's own length, so
+/// a truncated or malformed block yields what was readable instead of panicking.
+///
+/// This block is the device's answer to "what did I actually get", and ignoring
+/// it is how a controller ends up with a fully established AR that carries
+/// nothing but substitute data.
+pub fn parse_module_diff_block(response_data: &[u8]) -> Vec<SubmoduleDiff> {
+    let mut found = Vec::new();
+    let mut offset = 0usize;
+    while offset + 6 <= response_data.len() {
+        let block_type = rd_u16(response_data, offset, false);
+        let block_length = rd_u16(response_data, offset + 2, false) as usize;
+        if block_type == MODULE_DIFF_BLOCK {
+            let end = (offset + 4 + block_length).min(response_data.len());
+            let mut p = offset + 6;
+            if p + 2 <= end {
+                let apis = rd_u16(response_data, p, false);
+                p += 2;
+                for _ in 0..apis {
+                    if p + 6 > end {
+                        break;
+                    }
+                    p += 4; // API number, not needed to name a submodule
+                    let modules = rd_u16(response_data, p, false);
+                    p += 2;
+                    for _ in 0..modules {
+                        if p + 10 > end {
+                            break;
+                        }
+                        let slot = rd_u16(response_data, p, false);
+                        p += 8; // slot ++ module ident ++ module state
+                        let submodules = rd_u16(response_data, p, false);
+                        p += 2;
+                        for _ in 0..submodules {
+                            if p + 8 > end {
+                                break;
+                            }
+                            found.push(SubmoduleDiff {
+                                slot,
+                                subslot: rd_u16(response_data, p, false),
+                                submodule_ident: rd_u32(response_data, p + 2, false),
+                                state: rd_u16(response_data, p + 6, false),
+                            });
+                            p += 8;
+                        }
+                    }
+                }
+            }
+        }
+        offset += 4 + block_length;
+    }
+    found
+}
+
 /// Result from AR CONNECT (ConnectResult).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectResult {
@@ -338,6 +485,40 @@ pub fn parse_connect_response(
             pnio_status_str(nrd.args_status)
         ));
     }
+    // A device can accept the AR and still withhold the submodules, which it
+    // reports here and nowhere else. Failing now is kinder than delivering
+    // substitute data that reads like a broken device for the rest of the run.
+    let diffs = parse_module_diff_block(&nrd.payload);
+    let withheld: Vec<SubmoduleDiff> = diffs.into_iter().filter(|d| !d.is_ours()).collect();
+    if !withheld.is_empty() {
+        let detail = withheld
+            .iter()
+            .map(|d| {
+                format!(
+                    "slot {}/subslot 0x{:X} ident 0x{:04X}: {}",
+                    d.slot,
+                    d.subslot,
+                    d.submodule_ident,
+                    d.reason()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        // Who to send the caller to depends on which of the two fields said no:
+        // a submodule held for another AR is released at its owner, a submodule
+        // that is not the one we asked for is not released anywhere.
+        let advice = if withheld.iter().any(|d| d.is_locked()) {
+            "Release the device at whoever owns it first"
+        } else {
+            "Check the configuration against what the device really has plugged"
+        };
+        return Err(format!(
+            "the device accepted the AR but withheld {} submodule(s), so its cyclic \
+             frames would carry substitute data with IOPS bad: {detail}. {advice}",
+            withheld.len()
+        ));
+    }
+
     let input_frame_id = parse_iocr_block_res(&nrd.payload, 1);
     let output_frame_id = parse_iocr_block_res(&nrd.payload, 2);
     Ok(ConnectResult {
@@ -1922,5 +2103,220 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(transport.peer().contains("127.0.0.1"));
+    }
+
+    // ----------------------------------------------------------------- diff
+
+    /// A `SubmoduleState` built from its fields, so a test says which field it
+    /// is about instead of quoting a word off a wire.
+    fn submodule_state(ident_info: u16, ar_info: u16) -> u16 {
+        // IdentInfo occupies bits 14..11, ARInfo bits 10..7, and the format
+        // indicator in bit 15 is what says those fields are there at all. The
+        // lower bits carry states this parser does not read.
+        SUBMODULE_STATE_HAS_FIELDS | ((ident_info & 0xF) << 11) | ((ar_info & 0xF) << 7)
+    }
+
+    /// Subslot, submodule ident, state.
+    type Submodule = (u16, u32, u16);
+    /// Slot, and the submodules plugged in it.
+    type Module<'a> = (u16, &'a [Submodule]);
+
+    /// One ModuleDiffBlock, assembled the way the spec nests it: a block header,
+    /// then APIs, each with modules, each with submodules.
+    fn module_diff_block(modules: &[Module<'_>]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&1u16.to_be_bytes()); // version high/low
+        body.extend_from_slice(&1u16.to_be_bytes()); // one API
+        body.extend_from_slice(&0u32.to_be_bytes()); // API number
+        body.extend_from_slice(&(modules.len() as u16).to_be_bytes());
+        for (slot, submodules) in modules {
+            body.extend_from_slice(&slot.to_be_bytes());
+            body.extend_from_slice(&0u32.to_be_bytes()); // module ident
+            body.extend_from_slice(&0u16.to_be_bytes()); // module state
+            body.extend_from_slice(&(submodules.len() as u16).to_be_bytes());
+            for (subslot, ident, state) in *submodules {
+                body.extend_from_slice(&subslot.to_be_bytes());
+                body.extend_from_slice(&ident.to_be_bytes());
+                body.extend_from_slice(&state.to_be_bytes());
+            }
+        }
+        let mut block = Vec::new();
+        block.extend_from_slice(&MODULE_DIFF_BLOCK.to_be_bytes());
+        block.extend_from_slice(&(body.len() as u16).to_be_bytes());
+        block.extend_from_slice(&body);
+        block
+    }
+
+    /// The whole point of reading this block: an AR can be established in full
+    /// and still be given nothing, because the device kept the submodules for
+    /// the controller that had them first.
+    #[test]
+    fn a_submodule_another_controller_holds_is_not_ours() {
+        let held = SubmoduleDiff {
+            slot: 2,
+            subslot: 1,
+            submodule_ident: 0x1,
+            state: submodule_state(0, AR_INFO_LOCKED_BY_IOC),
+        };
+
+        assert_eq!(
+            held.ident_info(),
+            Some(0),
+            "the submodule is the one we asked for"
+        );
+        assert_eq!(held.ar_info(), Some(AR_INFO_LOCKED_BY_IOC));
+        assert!(!held.is_ours());
+        assert!(
+            held.reason().contains("locked by another IO-controller"),
+            "{}",
+            held.reason()
+        );
+    }
+
+    #[test]
+    fn a_submodule_this_ar_owns_is_ours() {
+        let ours = SubmoduleDiff {
+            slot: 2,
+            subslot: 1,
+            submodule_ident: 0x1,
+            state: submodule_state(0, AR_INFO_OK),
+        };
+
+        assert!(ours.is_ours());
+        assert_eq!(ours.reason(), "owned by this AR");
+    }
+
+    /// Ownership and identity are separate answers, and a caller that only
+    /// looked at one of them would report the wrong cause.
+    #[test]
+    fn the_wrong_submodule_says_so_even_when_the_ar_owns_it() {
+        let wrong = SubmoduleDiff {
+            slot: 2,
+            subslot: 1,
+            submodule_ident: 0x1,
+            state: submodule_state(2, AR_INFO_OK),
+        };
+
+        assert!(!wrong.is_ours());
+        assert!(
+            wrong.reason().contains("not the submodule we asked for"),
+            "{}",
+            wrong.reason()
+        );
+    }
+
+    /// Bit 15 decides whether the word is made of fields at all. Without it the
+    /// bits ARInfo would sit in belong to another coding, and a parser that read
+    /// them anyway would refuse a connect the device never objected to.
+    #[test]
+    fn a_state_word_in_the_other_format_is_not_read_as_fields() {
+        let other_format = SubmoduleDiff {
+            slot: 2,
+            subslot: 1,
+            submodule_ident: 0x1,
+            state: submodule_state(0, AR_INFO_LOCKED_BY_IOC) & !SUBMODULE_STATE_HAS_FIELDS,
+        };
+
+        assert_eq!(other_format.ident_info(), None);
+        assert_eq!(other_format.ar_info(), None);
+        assert!(!other_format.is_locked());
+        assert!(
+            other_format.is_ours(),
+            "a word we cannot read says nothing about ownership"
+        );
+    }
+
+    /// A connect response carrying nothing but an NRD header that accepted the
+    /// AR, and whatever blocks the test is about.
+    fn connect_response(blocks: &[u8]) -> Vec<u8> {
+        let mut payload = vec![0u8; 20]; // args_status 0, the rest unread here
+        payload.extend_from_slice(blocks);
+        payload
+    }
+
+    /// The two fields fail for different reasons and are fixed in different
+    /// places, so the message must not send the caller to release a device that
+    /// nobody is holding.
+    #[test]
+    fn the_advice_follows_the_field_that_withheld_the_submodule() {
+        let locked =
+            module_diff_block(&[(1, &[(1, 0x3010, submodule_state(0, AR_INFO_LOCKED_BY_IOC))])]);
+        let mismatched = module_diff_block(&[(1, &[(1, 0x3010, submodule_state(2, AR_INFO_OK))])]);
+
+        let held = parse_connect_response(&connect_response(&locked), false).unwrap_err();
+        let wrong = parse_connect_response(&connect_response(&mismatched), false).unwrap_err();
+
+        assert!(held.contains("Release the device"), "{held}");
+        assert!(
+            !wrong.contains("Release the device"),
+            "nobody is holding it: {wrong}"
+        );
+        assert!(wrong.contains("Check the configuration"), "{wrong}");
+    }
+
+    #[test]
+    fn every_submodule_of_every_module_is_reported_with_its_slot() {
+        let state = submodule_state(0, AR_INFO_LOCKED_BY_IOC);
+        let block = module_diff_block(&[
+            (1, &[(1, 0x3010, state), (2, 0x3011, state)]),
+            (2, &[(1, 0x0001, state)]),
+        ]);
+
+        let found = parse_module_diff_block(&block);
+
+        assert_eq!(found.len(), 3);
+        assert_eq!(
+            (found[0].slot, found[0].subslot, found[0].submodule_ident),
+            (1, 1, 0x3010)
+        );
+        assert_eq!(
+            (found[1].slot, found[1].subslot, found[1].submodule_ident),
+            (1, 2, 0x3011)
+        );
+        assert_eq!(
+            (found[2].slot, found[2].subslot, found[2].submodule_ident),
+            (2, 1, 0x0001)
+        );
+        assert!(found.iter().all(|s| !s.is_ours()));
+    }
+
+    /// The block is walked ahead of any decision about the AR, so a device that
+    /// sends a short or lying block must cost the caller a worse message, never
+    /// a panic.
+    #[test]
+    fn a_truncated_block_yields_what_was_readable() {
+        let state = submodule_state(0, AR_INFO_OK);
+        let block = module_diff_block(&[(1, &[(1, 0x3010, state), (2, 0x3011, state)])]);
+
+        for cut in 1..block.len() {
+            let found = parse_module_diff_block(&block[..cut]);
+            assert!(found.len() <= 2, "cut at {cut} invented submodules");
+        }
+    }
+
+    #[test]
+    fn a_length_that_claims_more_than_arrived_is_bounded() {
+        let state = submodule_state(0, AR_INFO_OK);
+        let mut block = module_diff_block(&[(1, &[(1, 0x3010, state)])]);
+        // Claim a block four times the size of what follows it.
+        let lie = ((block.len() as u16 - 4) * 4).to_be_bytes();
+        block[2] = lie[0];
+        block[3] = lie[1];
+
+        let found = parse_module_diff_block(&block);
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].submodule_ident, 0x3010);
+    }
+
+    #[test]
+    fn a_response_without_the_block_reports_nothing() {
+        // An IOCRBlockRes, which the same scan walks past.
+        let mut other = Vec::new();
+        other.extend_from_slice(&IOCR_BLOCK_RES.to_be_bytes());
+        other.extend_from_slice(&8u16.to_be_bytes());
+        other.extend_from_slice(&[0u8; 8]);
+
+        assert!(parse_module_diff_block(&other).is_empty());
     }
 }
