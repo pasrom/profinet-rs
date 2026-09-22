@@ -58,10 +58,15 @@ its outputs**. Whatever those outputs are wired to, it will drive them.
 
 ## Releases
 
-Tagged versions publish a binary for linux-x86_64, macos-arm64 and
-windows-x86_64. Each asset name carries the serve protocol it speaks, e.g.
+Tagged versions publish a binary for linux-x86_64, macos-arm64, windows-x86_64
+and windows-arm64. Each asset name carries the serve protocol it speaks, e.g.
 `profinet-linux-x86_64-v0.1.0-proto5`, so a consumer can pick a build it can
 actually talk to before downloading it.
+
+On Windows the architecture is not a preference. Npcap installs libraries for
+the machine's own architecture plus x86, and on Windows-on-ARM that means ARM64
+and x86 but no x64, so the x86_64 asset cannot load pcap there at all: it fails
+with STATUS_INVALID_IMAGE_FORMAT before reaching main, printing nothing.
 
 Every asset is published with signed build provenance. To check that a file
 really came out of this repository's workflow rather than from whoever handed

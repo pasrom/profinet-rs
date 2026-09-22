@@ -89,6 +89,20 @@ jobs:
             os: ubuntu-latest
             target: x86_64-pc-windows-gnu
             binary: profinet.exe
+          # Windows on ARM, built on an ARM runner rather than cross-built: the
+          # cross route would need a third-party toolchain download, which is
+          # exactly what the build above goes out of its way to avoid. The
+          # import library comes from the same tools/wpcap.def, made here by
+          # MSVC's own lib rather than by mingw's dlltool.
+          #
+          # It is not a nicety. Npcap on Windows-on-ARM installs ARM64 and x86
+          # libraries and no x64 ones, so the x86_64 asset cannot load pcap
+          # there at all: it dies with STATUS_INVALID_IMAGE_FORMAT before main,
+          # whatever the PATH says.
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            binary: profinet.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show
@@ -107,13 +121,29 @@ jobs:
           x86_64-w64-mingw32-dlltool -d tools/wpcap.def \
             -l "$RUNNER_TEMP/wpcap/libwpcap.a"
 
+      - name: Build the wpcap import library with MSVC
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -property installationPath
+          $lib = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter lib.exe |
+                 Where-Object { $_.FullName -match '\\arm64\\lib\.exe$' } |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if (-not $lib) { throw "no arm64 lib.exe under $vs" }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\wpcap" | Out-Null
+          & $lib /def:tools\wpcap.def /machine:ARM64 /out:"$env:RUNNER_TEMP\wpcap\wpcap.lib"
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
-          RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-gnu' && format('-L {0}/wpcap', runner.temp) || '' }}
+          RUSTFLAGS: ${{ startsWith(matrix.name, 'windows') && format('-L {0}/wpcap', runner.temp) || '' }}
 
       - name: Name the binary after its target
+        # Explicit, because a Windows runner would otherwise run this in
+        # PowerShell and none of it is PowerShell.
+        shell: bash
         run: |
           src="target/${{ matrix.target }}/release/${{ matrix.binary }}"
           test -f "$src"
