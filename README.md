@@ -59,7 +59,8 @@ its outputs**. Whatever those outputs are wired to, it will drive them.
 ## Releases
 
 Tagged versions publish a binary for linux-x86_64, macos-arm64 and
-windows-x86_64. Each asset name carries the serve protocol it speaks, e.g.
+windows-x86_64. Each asset name carries the protocol it speaks — the `serve`
+lines and the `--json` answers, versioned as one — e.g.
 `profinet-linux-x86_64-v0.1.0-proto5`, so a consumer can pick a build it can
 actually talk to before downloading it.
 
@@ -102,11 +103,23 @@ profinet capture-check
 # Assign a station address over DCP
 profinet -i en0 set-ip <mac> 192.168.0.2 255.255.255.0 0.0.0.0
 
+# Name it, flash its LEDs, reset its communication parameters (mode 2)
+profinet -i en0 set-param <mac> name my-device --permanent
+profinet -i en0 signal <mac>
+profinet -i en0 reset <mac> --mode communication
+
 # Cyclic RT_CLASS_1 exchange, driven from a GSDML
 profinet -i en0 cyclic <station> --gsdml device.xml
 ```
 
 A station can be given by name or by IPv4 address.
+
+For a program driving the DCP commands, `--json` makes `discover`,
+`set-param`, `set-ip`, `signal` and `reset` answer with one NDJSON line that
+carries the protocol number. A set the device refuses or does not answer
+still exits 0 and says so in the line (`refused`, `timeout`); a non-zero exit
+means no answer was produced, such as a failure to open the interface, and
+stderr says why.
 
 `--help` on any subcommand lists its options.
 

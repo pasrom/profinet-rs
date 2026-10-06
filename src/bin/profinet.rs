@@ -84,8 +84,33 @@ struct Cli {
     #[arg(short, long, default_value_t = 10)]
     timeout: u64,
 
+    /// Answer as one NDJSON line instead of text: `discover`, `set-param`,
+    /// `set-ip`, `signal` and `reset`, each line carrying `proto`. Exit is 0
+    /// whenever the line was written, whatever the device said; a non-zero
+    /// exit means no answer was produced (stderr says why). Also accepted by
+    /// `proto` and `capture-check`, which answer in their own JSON anyway.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Command,
+}
+
+impl Command {
+    /// Whether this command can answer under `--json`: the DCP commands, and
+    /// `proto` and `capture-check`, which answer in JSON anyway.
+    fn speaks_json(&self) -> bool {
+        matches!(
+            self,
+            Command::Proto
+                | Command::CaptureCheck
+                | Command::Discover
+                | Command::SetParam { .. }
+                | Command::SetIp { .. }
+                | Command::Signal { .. }
+                | Command::Reset { .. }
+        )
+    }
 }
 
 /// Parameter selector for get-param/set-param (argparse `choices`).
@@ -474,15 +499,46 @@ fn parse_ipv4(s: &str) -> Result<[u8; 4], String> {
 // DCP (raw-L2) commands
 // ---------------------------------------------------------------------------
 
-/// Send a DCP request and wait for a SET response, returning the block error
-/// code. Mirrors dcp.py `_recv_set_response`: skip frames not addressed to us
-/// and non-response frames (our own echoed request), enforce the timeout.
+/// What became of a DCP SET-type request (set, signal, reset) once it was on
+/// the wire. A refusal and a timeout are told apart because they are fixed in
+/// different places: one is the device's decision, the other a device that
+/// did not answer. A failure on this side is not an answer at all, and is an
+/// `Err` of [`dcp_set_roundtrip`] instead.
+#[derive(Debug, PartialEq, Eq)]
+enum SetAnswer {
+    Done,
+    /// The device answered and said no: a block error code, or a response
+    /// rejecting the service as a whole (`code` is `None` then).
+    Refused {
+        code: Option<u8>,
+        text: String,
+    },
+    /// Nothing answered within the window.
+    Timeout,
+}
+
+/// A SET response's block error as an answer.
+fn set_code_answer(code: u8) -> SetAnswer {
+    if code == dcp::DCP_BLOCK_ERROR_OK {
+        SetAnswer::Done
+    } else {
+        SetAnswer::Refused {
+            code: Some(code),
+            text: dcp::block_error_name(code),
+        }
+    }
+}
+
+/// Send a DCP request and wait for its SET response. Mirrors dcp.py
+/// `_recv_set_response`: skip frames not addressed to us and non-response
+/// frames (our own echoed request), enforce the timeout. `Err` when this side
+/// could not send or receive.
 fn dcp_set_roundtrip(
     iface: &str,
     my_mac: &[u8; 6],
     request: &[u8],
     timeout: Duration,
-) -> Result<u8, String> {
+) -> Result<SetAnswer, String> {
     // Match the response to THIS request's xid so a stray RTA/RT frame or a
     // foreign device cannot be mistaken for a SET success.
     let expected_xid =
@@ -494,19 +550,50 @@ fn dcp_set_roundtrip(
     loop {
         let now = Instant::now();
         if now >= deadline {
-            return Err("No DCP SET response received".to_string());
+            return Ok(SetAnswer::Timeout);
         }
         let Some(frame) = sock.recv(deadline - now)? else {
-            return Err("No DCP SET response received".to_string());
+            return Ok(SetAnswer::Timeout);
         };
         if frame.len() < 14 || frame[0..6] != my_mac[..] {
             continue;
         }
         match dcp::parse_set_response(&frame, expected_xid) {
-            Ok(Some(code)) => return Ok(code),
+            Ok(Some(code)) => return Ok(set_code_answer(code)),
             // Not our response (echoed request, foreign/stale frame): keep waiting.
             Ok(None) => continue,
-            Err(e) => return Err(e),
+            // Addressed to us with our xid, but rejecting the service.
+            Err(text) => return Ok(SetAnswer::Refused { code: None, text }),
+        }
+    }
+}
+
+/// Report the device's answer to a SET-type command and return the exit code.
+///
+/// With `--json`: one `result` line and exit 0 whatever the device said — the
+/// answer is the output, as for `capture-check`, and a non-zero exit is kept
+/// for "no answer was produced". Without: text, with exit 1 on failure.
+fn report_set(
+    json: bool,
+    action: DcpAction,
+    mac: &[u8; 6],
+    answer: SetAnswer,
+    done: &str,
+    failed: &str,
+) -> Result<i32, String> {
+    if json {
+        println!("{}", result_line(action, mac, &answer));
+        return Ok(0);
+    }
+    match answer {
+        SetAnswer::Done => {
+            println!("{done}");
+            Ok(0)
+        }
+        SetAnswer::Refused { text, .. } => Err(format!("{failed}: {text}")),
+        SetAnswer::Timeout => {
+            println!("{failed} (timeout)");
+            Ok(1)
         }
     }
 }
@@ -555,9 +642,52 @@ fn cmd_get_param(iface: &str, my_mac: &[u8; 6], target: &str, param: Param) -> R
     }
 }
 
+/// How long a SET-type request waits for its response.
+const DCP_SET_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What every SET-type DCP command needs besides its request: where to send
+/// it from, and whether to answer in text or JSON.
+struct DcpSet<'a> {
+    iface: &'a str,
+    my_mac: [u8; 6],
+    json: bool,
+}
+
+impl DcpSet<'_> {
+    /// Text-mode progress line; under `--json` the result line is the only
+    /// output.
+    fn banner(&self, text: std::fmt::Arguments) {
+        if !self.json {
+            println!("{text}");
+        }
+    }
+
+    /// Send `request` to `dst`, wait for its SET response and report it.
+    fn send(
+        &self,
+        action: DcpAction,
+        dst: &[u8; 6],
+        request: &[u8],
+        done: &str,
+        failed: &str,
+    ) -> Result<i32, String> {
+        let answer = dcp_set_roundtrip(self.iface, &self.my_mac, request, DCP_SET_TIMEOUT)
+            .map_err(|e| format!("{failed}: {e}"))?;
+        report_set(self.json, action, dst, answer, done, failed)
+    }
+}
+
+/// The SET context for `iface`, with the controller MAC looked up once.
+fn dcp_set(iface: &str, json: bool) -> Result<DcpSet<'_>, String> {
+    Ok(DcpSet {
+        iface,
+        my_mac: pcap::get_mac(iface)?,
+        json,
+    })
+}
+
 fn cmd_set_param(
-    iface: &str,
-    my_mac: &[u8; 6],
+    set: &DcpSet,
     target: &str,
     param: SettableParam,
     value: &str,
@@ -572,28 +702,19 @@ fn cmd_set_param(
         ));
     }
     let SettableParam::Name = param;
-    let request = dcp::set_name_request_qualified(my_mac, &dst, gen_xid()?, value, permanent);
-
-    match dcp_set_roundtrip(iface, my_mac, &request, Duration::from_secs(5)) {
-        Ok(dcp::DCP_BLOCK_ERROR_OK) => {
-            println!("Set {} = {value}", settable_param_name(param));
-            Ok(0)
-        }
-        Ok(code) => Err(format!(
-            "DCP SET failed for '{}': {}",
-            settable_param_name(param),
-            dcp::block_error_name(code)
-        )),
-        Err(_) => {
-            println!("Failed to set {}", settable_param_name(param));
-            Ok(1)
-        }
-    }
+    let request = dcp::set_name_request_qualified(&set.my_mac, &dst, gen_xid()?, value, permanent);
+    let name = settable_param_name(param);
+    set.send(
+        DcpAction::SetName,
+        &dst,
+        &request,
+        &format!("Set {name} = {value}"),
+        &format!("Failed to set {name}"),
+    )
 }
 
 fn cmd_set_ip(
-    iface: &str,
-    my_mac: &[u8; 6],
+    set: &DcpSet,
     target: &str,
     ip: &str,
     netmask: &str,
@@ -602,7 +723,7 @@ fn cmd_set_ip(
 ) -> Result<i32, String> {
     let dst = s2mac(target)?;
     let request = dcp::set_ip_request_qualified(
-        my_mac,
+        &set.my_mac,
         &dst,
         gen_xid()?,
         &parse_ipv4(ip)?,
@@ -610,69 +731,54 @@ fn cmd_set_ip(
         &parse_ipv4(gateway)?,
         permanent,
     );
-
-    println!("Setting IP {ip} on {target}...");
-    match dcp_set_roundtrip(iface, my_mac, &request, Duration::from_secs(5)) {
-        Ok(dcp::DCP_BLOCK_ERROR_OK) => {
-            println!("Set IP={ip} netmask={netmask} gateway={gateway}");
-            Ok(0)
-        }
-        Ok(code) => Err(format!(
-            "DCP SET IP failed: {}",
-            dcp::block_error_name(code)
-        )),
-        Err(_) => {
-            println!("Failed to set IP (timeout)");
-            Ok(1)
-        }
-    }
+    set.banner(format_args!("Setting IP {ip} on {target}..."));
+    set.send(
+        DcpAction::SetIp,
+        &dst,
+        &request,
+        &format!("Set IP={ip} netmask={netmask} gateway={gateway}"),
+        "Failed to set IP",
+    )
 }
 
-fn cmd_signal(iface: &str, my_mac: &[u8; 6], target: &str) -> Result<i32, String> {
+fn cmd_signal(set: &DcpSet, target: &str) -> Result<i32, String> {
     let dst = s2mac(target)?;
-    let request = dcp::signal_request(my_mac, &dst, gen_xid()?, 3000);
-
-    println!("Signalling device {target}...");
-    match dcp_set_roundtrip(iface, my_mac, &request, Duration::from_secs(5)) {
-        Ok(dcp::DCP_BLOCK_ERROR_OK) => {
-            println!("Device LED flash triggered");
-            Ok(0)
-        }
-        Ok(code) => Err(format!(
-            "DCP Signal failed: {}",
-            dcp::block_error_name(code)
-        )),
-        Err(_) => {
-            println!("Failed to signal device (timeout)");
-            Ok(1)
-        }
-    }
+    let request = dcp::signal_request(&set.my_mac, &dst, gen_xid()?, 3000);
+    set.banner(format_args!("Signalling device {target}..."));
+    set.send(
+        DcpAction::Signal,
+        &dst,
+        &request,
+        "Device LED flash triggered",
+        "Failed to signal device",
+    )
 }
 
-fn cmd_reset(iface: &str, my_mac: &[u8; 6], target: &str, mode: ResetMode) -> Result<i32, String> {
+fn cmd_reset(set: &DcpSet, target: &str, mode: ResetMode) -> Result<i32, String> {
     let dst = s2mac(target)?;
-    let request = dcp::reset_request(my_mac, &dst, gen_xid()?, mode.qualifier());
-
-    println!("Resetting device {target} (mode: {})...", mode.as_str());
-    match dcp_set_roundtrip(iface, my_mac, &request, Duration::from_secs(5)) {
-        Ok(dcp::DCP_BLOCK_ERROR_OK) => {
-            println!("Reset command acknowledged");
-            Ok(0)
-        }
-        Ok(code) => Err(format!(
-            "DCP Reset to Factory failed: {}",
-            dcp::block_error_name(code)
-        )),
-        Err(_) => {
-            println!("Failed to reset device (timeout)");
-            Ok(1)
-        }
-    }
+    let request = dcp::reset_request(&set.my_mac, &dst, gen_xid()?, mode.qualifier());
+    set.banner(format_args!(
+        "Resetting device {target} (mode: {})...",
+        mode.as_str()
+    ));
+    set.send(
+        DcpAction::Reset,
+        &dst,
+        &request,
+        "Reset command acknowledged",
+        "Failed to reset device",
+    )
 }
 
-fn cmd_discover(iface: &str, timeout: Duration) -> Result<i32, String> {
-    println!("Discovering PROFINET devices on {iface}...");
+fn cmd_discover(iface: &str, timeout: Duration, json: bool) -> Result<i32, String> {
+    if !json {
+        println!("Discovering PROFINET devices on {iface}...");
+    }
     let devices = pcap::discover(iface, timeout)?;
+    if json {
+        println!("{}", devices_line(iface, &devices));
+        return Ok(0);
+    }
     if devices.is_empty() {
         println!("No devices found");
         return Ok(0);
@@ -1469,6 +1575,7 @@ enum Tag {
     CyclicStarted,
     Data,
     Deadman,
+    Devices,
     Error,
     Hello,
     InputStatus,
@@ -1477,6 +1584,7 @@ enum Tag {
     Pong,
     ReadError,
     Refused,
+    Result,
     SafeShutdown,
     Status,
     Stopped,
@@ -1619,6 +1727,116 @@ fn capture_line(verdict: &capture_check::Readiness, iface: Option<&str>) -> Stri
         capture: verdict.as_str(),
         iface,
         detail,
+    })
+}
+
+/// The DCP command a `result` line answers.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DcpAction {
+    SetName,
+    SetIp,
+    Signal,
+    Reset,
+}
+
+/// `{"proto":N,"type":"result","action":..,"mac":..,"ok":..}` — the answer to
+/// `set-param`, `set-ip`, `signal` and `reset` under `--json`.
+///
+/// A failure adds `error`: `refused` (the device said no; `dcp_error` carries
+/// its block error code when it gave one, `detail` the reason) or `timeout`
+/// (nothing answered). A failure on this side produces no line: stderr and
+/// exit 1, like every other error of this binary. `proto` is on the line
+/// because this is a one-shot answer with no `hello` before it to check the
+/// version against.
+#[derive(Serialize)]
+struct DcpResult<'a> {
+    proto: u32,
+    #[serde(rename = "type")]
+    tag: Tag,
+    action: DcpAction,
+    mac: String,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dcp_error: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<&'a str>,
+}
+
+fn result_line(action: DcpAction, mac: &[u8; 6], answer: &SetAnswer) -> String {
+    let (error, dcp_error, detail) = match answer {
+        SetAnswer::Done => (None, None, None),
+        SetAnswer::Refused { code, text } => (Some("refused"), *code, Some(text.as_str())),
+        SetAnswer::Timeout => (Some("timeout"), None, None),
+    };
+    json_line(&DcpResult {
+        proto: SERVE_PROTO,
+        tag: Tag::Result,
+        action,
+        mac: mac2s(mac),
+        ok: *answer == SetAnswer::Done,
+        error,
+        dcp_error,
+        detail,
+    })
+}
+
+/// One device in a `devices` line: the Identify response as received, numbers
+/// left as numbers — `role` is the bitmask and `ip_block_info` the status word
+/// (`null` when the response had no IP block), not names, because a consumer
+/// decides by bit and a name table would be a second vocabulary to keep in
+/// step. `vendor_name` comes from the public vendor table, which
+/// names an id it does not know as "Unknown (0x....)".
+#[derive(Serialize)]
+struct DeviceJson<'a> {
+    mac: String,
+    name: &'a str,
+    device_type: &'a str,
+    ip: String,
+    netmask: String,
+    gateway: String,
+    ip_block_info: Option<u16>,
+    vendor_id: u16,
+    vendor_name: String,
+    device_id: u16,
+    role: u8,
+}
+
+/// `{"proto":N,"type":"devices","iface":..,"devices":[..]}` — the answer to
+/// `discover` under `--json`. An empty list is an answer, not an error.
+#[derive(Serialize)]
+struct Devices<'a> {
+    proto: u32,
+    #[serde(rename = "type")]
+    tag: Tag,
+    iface: &'a str,
+    devices: Vec<DeviceJson<'a>>,
+}
+
+fn devices_line(iface: &str, devices: &[dcp::DcpDevice]) -> String {
+    let devices = devices
+        .iter()
+        .map(|d| DeviceJson {
+            mac: mac2s(&d.mac),
+            name: &d.name,
+            device_type: &d.device_type,
+            ip: s2ip(&d.ip).unwrap_or_default(),
+            netmask: s2ip(&d.netmask).unwrap_or_default(),
+            gateway: s2ip(&d.gateway).unwrap_or_default(),
+            ip_block_info: d.ip_block_info,
+            vendor_id: d.vendor_id,
+            vendor_name: profinet_rs::vendors::get_vendor_name(d.vendor_id),
+            device_id: d.device_id,
+            role: d.role,
+        })
+        .collect();
+    json_line(&Devices {
+        proto: SERVE_PROTO,
+        tag: Tag::Devices,
+        iface,
+        devices,
     })
 }
 
@@ -2439,10 +2657,11 @@ fn host_unix_us() -> u128 {
 // serve: generic acyclic read/write over stdin/stdout
 // ---------------------------------------------------------------------------
 
-/// Wire protocol version of the `serve` NDJSON contract. A consumer that
+/// Wire protocol version of this binary's NDJSON output: the `serve`
+/// contract and the `--json` answers of the DCP commands. A consumer that
 /// understands a different one must refuse rather than misread: the two
 /// programs ship separately and can drift apart.
-const SERVE_PROTO: u32 = 7;
+const SERVE_PROTO: u32 = 8;
 
 /// One parsed request from the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -3407,6 +3626,12 @@ fn run(cli: &Cli) -> Result<i32, String> {
         Ordering::SeqCst,
     );
 
+    if cli.json && !cli.command.speaks_json() {
+        return Err(
+            "--json is not answered by this command; see --help for the ones that do".to_string(),
+        );
+    }
+
     // Answered from the binary alone, so it comes before the interface is
     // resolved and before any socket is opened.
     if matches!(cli.command, Command::Proto) {
@@ -3437,7 +3662,7 @@ fn run(cli: &Cli) -> Result<i32, String> {
         // Dispatched above, before the interface guard; these arms exist only
         // to keep the match exhaustive.
         Command::Proto | Command::CaptureCheck => Ok(0),
-        Command::Discover => cmd_discover(iface, timeout),
+        Command::Discover => cmd_discover(iface, timeout, cli.json),
         Command::GetParam { target, param } => {
             let my_mac = pcap::get_mac(iface)?;
             cmd_get_param(iface, &my_mac, target, *param)
@@ -3447,10 +3672,13 @@ fn run(cli: &Cli) -> Result<i32, String> {
             param,
             value,
             permanent,
-        } => {
-            let my_mac = pcap::get_mac(iface)?;
-            cmd_set_param(iface, &my_mac, target, *param, value, *permanent)
-        }
+        } => cmd_set_param(
+            &dcp_set(iface, cli.json)?,
+            target,
+            *param,
+            value,
+            *permanent,
+        ),
         Command::Read {
             target,
             api: _,
@@ -3481,18 +3709,16 @@ fn run(cli: &Cli) -> Result<i32, String> {
             netmask,
             gateway,
             permanent,
-        } => {
-            let my_mac = pcap::get_mac(iface)?;
-            cmd_set_ip(iface, &my_mac, target, ip, netmask, gateway, *permanent)
-        }
-        Command::Signal { target } => {
-            let my_mac = pcap::get_mac(iface)?;
-            cmd_signal(iface, &my_mac, target)
-        }
-        Command::Reset { target, mode } => {
-            let my_mac = pcap::get_mac(iface)?;
-            cmd_reset(iface, &my_mac, target, *mode)
-        }
+        } => cmd_set_ip(
+            &dcp_set(iface, cli.json)?,
+            target,
+            ip,
+            netmask,
+            gateway,
+            *permanent,
+        ),
+        Command::Signal { target } => cmd_signal(&dcp_set(iface, cli.json)?, target),
+        Command::Reset { target, mode } => cmd_reset(&dcp_set(iface, cli.json)?, target, *mode),
         Command::Cyclic {
             target,
             gsdml,
@@ -3922,6 +4148,114 @@ mod tests {
     fn parse_ipv4_dotted_quad() {
         assert_eq!(parse_ipv4("192.168.0.2").unwrap(), [192, 168, 0, 2]);
         assert!(parse_ipv4("999.1.1.1").is_err());
+    }
+
+    #[test]
+    fn set_response_codes_map_to_answers() {
+        assert_eq!(set_code_answer(dcp::DCP_BLOCK_ERROR_OK), SetAnswer::Done);
+        assert_eq!(
+            set_code_answer(dcp::DCP_BLOCK_ERROR_SET_NOT_POSSIBLE),
+            SetAnswer::Refused {
+                code: Some(dcp::DCP_BLOCK_ERROR_SET_NOT_POSSIBLE),
+                text: dcp::block_error_name(dcp::DCP_BLOCK_ERROR_SET_NOT_POSSIBLE),
+            }
+        );
+    }
+
+    #[test]
+    fn json_answers_exit_zero_whatever_the_device_said() {
+        let mac = [0u8; 6];
+        for answer in [
+            SetAnswer::Done,
+            SetAnswer::Timeout,
+            SetAnswer::Refused {
+                code: Some(5),
+                text: "x".into(),
+            },
+        ] {
+            assert_eq!(
+                report_set(true, DcpAction::Signal, &mac, answer, "done", "failed"),
+                Ok(0)
+            );
+        }
+    }
+
+    #[test]
+    fn text_answers_keep_failing_with_a_nonzero_exit() {
+        let mac = [0u8; 6];
+        let report = |answer| report_set(false, DcpAction::Signal, &mac, answer, "done", "failed");
+        assert_eq!(report(SetAnswer::Done), Ok(0));
+        assert_eq!(report(SetAnswer::Timeout), Ok(1));
+        assert_eq!(
+            report(SetAnswer::Refused {
+                code: Some(5),
+                text: "no".into()
+            }),
+            Err("failed: no".to_string())
+        );
+    }
+
+    #[test]
+    fn json_is_refused_where_it_changes_nothing() {
+        // `run` stores into the process-global command-line state.
+        let _guard = PROCESS_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        for args in [
+            &["profinet", "--json", "proto"][..],
+            &["profinet", "--json", "capture-check"],
+            &["profinet", "--json", "-i", "en0", "discover"],
+            &["profinet", "-i", "en0", "signal", "aa:bb", "--json"],
+            &[
+                "profinet",
+                "-i",
+                "en0",
+                "reset",
+                "aa:bb",
+                "--mode",
+                "communication",
+                "--json",
+            ],
+            &[
+                "profinet",
+                "-i",
+                "en0",
+                "set-ip",
+                "aa:bb",
+                "1.2.3.4",
+                "255.0.0.0",
+                "0.0.0.0",
+                "--json",
+            ],
+            &[
+                "profinet",
+                "-i",
+                "en0",
+                "set-param",
+                "aa:bb",
+                "name",
+                "x",
+                "--json",
+            ],
+        ] {
+            let cli = parse(args);
+            assert!(cli.json && cli.command.speaks_json(), "{args:?}");
+        }
+        for args in [
+            &[
+                "profinet",
+                "-i",
+                "en0",
+                "--json",
+                "get-param",
+                "aa:bb",
+                "name",
+            ][..],
+            &["profinet", "-i", "en0", "--json", "read-inm0", "dev"],
+        ] {
+            let cli = parse(args);
+            assert!(!cli.command.speaks_json(), "{args:?}");
+            let err = run(&cli).expect_err("--json on a command without a JSON answer");
+            assert!(err.contains("--json"), "{err}");
+        }
     }
 
     #[test]
@@ -4531,6 +4865,72 @@ mod tests {
             r#"{"capture":"unknown","iface":"en8","detail":"odd"}"#
         );
 
+        // One-shot DCP answers under --json. They carry `proto` because no
+        // hello precedes them; every outcome shape is pinned.
+        const MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+        assert_eq!(
+            result_line(DcpAction::SetName, &MAC, &SetAnswer::Done),
+            r#"{"proto":8,"type":"result","action":"set_name","mac":"02:00:00:00:00:01","ok":true}"#
+        );
+        assert_eq!(
+            result_line(
+                DcpAction::SetIp,
+                &MAC,
+                &SetAnswer::Refused {
+                    code: Some(5),
+                    text: "Set not possible".into()
+                }
+            ),
+            r#"{"proto":8,"type":"result","action":"set_ip","mac":"02:00:00:00:00:01","ok":false,"error":"refused","dcp_error":5,"detail":"Set not possible"}"#
+        );
+        assert_eq!(
+            result_line(
+                DcpAction::Reset,
+                &MAC,
+                &SetAnswer::Refused {
+                    code: None,
+                    text: "unsupported".into()
+                }
+            ),
+            r#"{"proto":8,"type":"result","action":"reset","mac":"02:00:00:00:00:01","ok":false,"error":"refused","detail":"unsupported"}"#
+        );
+        assert_eq!(
+            result_line(DcpAction::Signal, &MAC, &SetAnswer::Timeout),
+            r#"{"proto":8,"type":"result","action":"signal","mac":"02:00:00:00:00:01","ok":false,"error":"timeout"}"#
+        );
+        assert_eq!(
+            devices_line("en8", &[]),
+            r#"{"proto":8,"type":"devices","iface":"en8","devices":[]}"#
+        );
+        let device = dcp::DcpDevice {
+            mac: MAC,
+            name: "dev".into(),
+            device_type: "io".into(),
+            ip: [192, 168, 0, 2],
+            netmask: [255, 255, 255, 0],
+            gateway: [0, 0, 0, 0],
+            vendor_id: 0x002A,
+            device_id: 0x0101,
+            role: 0x01,
+            ip_block_info: Some(0x0081),
+        };
+        assert_eq!(
+            devices_line("en8", std::slice::from_ref(&device)),
+            format!(
+                r#"{{"proto":8,"type":"devices","iface":"en8","devices":[{{"mac":"02:00:00:00:00:01","name":"dev","device_type":"io","ip":"192.168.0.2","netmask":"255.255.255.0","gateway":"0.0.0.0","ip_block_info":129,"vendor_id":42,"vendor_name":"{}","device_id":257,"role":1}}]}}"#,
+                profinet_rs::vendors::get_vendor_name(0x002A)
+            )
+        );
+        // No IP block in the response: null, not the "not set" status 0.
+        let line = devices_line(
+            "en8",
+            &[dcp::DcpDevice {
+                ip_block_info: None,
+                ..device
+            }],
+        );
+        assert!(line.contains(r#""ip_block_info":null,"#), "{line}");
+
         // Answers to a request, all id-first.
         assert_eq!(bye_line(7), r#"{"id":7,"type":"bye"}"#);
         assert_eq!(
@@ -4559,7 +4959,7 @@ mod tests {
         assert_eq!(
             hello_line("demo", true, 30, false, 6),
             format!(
-                r#"{{"proto":7,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
+                r#"{{"proto":8,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );
@@ -4860,6 +5260,28 @@ mod tests {
             ("output", output_line(4, false, nasty)),
             ("safe_shutdown", safe_shutdown_line(nasty, true, nasty)),
             ("alarm", alarm_line(nasty, nasty)),
+            (
+                "result",
+                result_line(
+                    DcpAction::SetName,
+                    &[0; 6],
+                    &SetAnswer::Refused {
+                        code: None,
+                        text: nasty.into(),
+                    },
+                ),
+            ),
+            (
+                "devices",
+                devices_line(
+                    nasty,
+                    &[dcp::DcpDevice {
+                        name: nasty.into(),
+                        device_type: nasty.into(),
+                        ..Default::default()
+                    }],
+                ),
+            ),
         ] {
             // The consumer parses these with serde_json, so valid JSON is the
             // contract, not merely "looks about right".
