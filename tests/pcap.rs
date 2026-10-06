@@ -42,6 +42,7 @@ fn expected_device() -> DcpDevice {
         vendor_id: 0x002A,
         device_id: 0x0101,
         role: 0x01,
+        ip_block_info: Some(0x0001),
     }
 }
 

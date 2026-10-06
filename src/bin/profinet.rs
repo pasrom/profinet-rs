@@ -695,6 +695,9 @@ fn print_device(d: &dcp::DcpDevice) {
     println!("  IP:      {}", s2ip(&d.ip).unwrap_or_default());
     println!("  Netmask: {}", s2ip(&d.netmask).unwrap_or_default());
     println!("  Gateway: {}", s2ip(&d.gateway).unwrap_or_default());
+    if let Some(info) = d.ip_block_info.filter(|&info| info != 0) {
+        println!("  IP Info: {}", dcp::ip_block_info_name(info));
+    }
     println!(
         "  Vendor:  {} (0x{:04X})",
         profinet_rs::vendors::get_vendor_name(d.vendor_id),

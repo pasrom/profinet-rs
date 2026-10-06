@@ -547,6 +547,42 @@ pub fn parse_get_response(
     Ok(None)
 }
 
+/// IP BlockInfo values: the status word of an Identify response's IP
+/// parameter block (IEC 61158-6-10; dcp.py IPBlockInfo). Bit 7 flags an
+/// address conflict on top of the base state.
+pub const IP_BLOCK_INFO_NOT_SET: u16 = 0x0000;
+pub const IP_BLOCK_INFO_SET: u16 = 0x0001;
+pub const IP_BLOCK_INFO_SET_BY_DHCP: u16 = 0x0002;
+pub const IP_BLOCK_INFO_NOT_SET_CONFLICT: u16 = 0x0080;
+pub const IP_BLOCK_INFO_SET_CONFLICT: u16 = 0x0081;
+pub const IP_BLOCK_INFO_SET_BY_DHCP_CONFLICT: u16 = 0x0082;
+
+/// Human-readable name of an IP BlockInfo value (dcp.py IPBlockInfo.get_name).
+pub fn ip_block_info_name(info: u16) -> String {
+    let name = match info {
+        IP_BLOCK_INFO_NOT_SET => "IP not set",
+        IP_BLOCK_INFO_SET => "IP set",
+        IP_BLOCK_INFO_SET_BY_DHCP => "IP set by DHCP",
+        IP_BLOCK_INFO_NOT_SET_CONFLICT => "IP not set (address conflict detected)",
+        IP_BLOCK_INFO_SET_CONFLICT => "IP set (address conflict detected)",
+        IP_BLOCK_INFO_SET_BY_DHCP_CONFLICT => "IP set by DHCP (address conflict detected)",
+        _ => return format!("Unknown (0x{info:04X})"),
+    };
+    name.to_string()
+}
+
+/// Whether an IP BlockInfo value reports an address conflict (dcp.py
+/// IPBlockInfo.has_conflict).
+pub fn ip_block_info_has_conflict(info: u16) -> bool {
+    info & 0x0080 != 0
+}
+
+/// Whether an IP BlockInfo value reports a DHCP-assigned address (dcp.py
+/// IPBlockInfo.is_dhcp).
+pub fn ip_block_info_is_dhcp(info: u16) -> bool {
+    info & 0x0002 != 0
+}
+
 /// Parsed PROFINET device information from a DCP Identify response, the
 /// subset of dcp.py DCPDeviceDescription carried by the standard blocks.
 /// Fields for blocks absent from the response keep their zero/empty defaults,
@@ -562,6 +598,11 @@ pub struct DcpDevice {
     pub vendor_id: u16,
     pub device_id: u16,
     pub role: u8,
+    /// Status word of the IP parameter block (`IP_BLOCK_INFO_*`): whether the
+    /// address is set, set by DHCP, and in conflict. `None` when the response
+    /// carried no IP block, which is not the same as the device reporting
+    /// "IP not set" (0).
+    pub ip_block_info: Option<u16>,
 }
 
 /// Parse a DCP Identify response Ethernet frame into a [`DcpDevice`],
@@ -645,6 +686,7 @@ pub fn parse_identify_response(frame: &[u8]) -> Result<DcpDevice, String> {
                 device.name = String::from_utf8_lossy(block_payload).into_owned();
             }
             (DCP_OPTION_IP, DCP_SUBOPTION_IP_PARAMETER) if block_payload.len() >= 12 => {
+                device.ip_block_info = Some(u16::from_be_bytes([blocks[4], blocks[5]]));
                 device.ip = block_payload[0..4].try_into().expect("4-byte slice");
                 device.netmask = block_payload[4..8].try_into().expect("4-byte slice");
                 device.gateway = block_payload[8..12].try_into().expect("4-byte slice");
