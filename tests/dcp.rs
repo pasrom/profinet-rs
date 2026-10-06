@@ -282,9 +282,16 @@ mod cli_builders {
 
     #[test]
     fn reset_request_matches_reference() {
+        // Mode 2 (reset communication parameter): option 05, suboption 06,
+        // block length 2, qualifier 0x0004 = 2 << 1 (IEC 61158-6-10).
         assert_eq!(
-            hx(&reset_request(&S, &D, X, RESET_MODE_FACTORY)),
-            "aabbccddeeff0011223344558892fefd04001234567800000006050600020040"
+            hx(&reset_request(
+                &S,
+                &D,
+                X,
+                RESET_QUALIFIER_COMMUNICATION_PARAM
+            )),
+            "aabbccddeeff0011223344558892fefd04001234567800000006050600020004"
         );
     }
 
@@ -749,10 +756,71 @@ mod py_parity {
 
     // test_reset_modes_defined
     #[test]
+    #[allow(deprecated)]
     fn reset_mode_constants() {
         assert_eq!(RESET_MODE_COMMUNICATION, 0x0002);
         assert_eq!(RESET_MODE_APPLICATION, 0x0004);
         assert_eq!(RESET_MODE_FACTORY, 0x0040);
+    }
+
+    // ResetQualifier: the mode number shifted left by one, bit 0 the _ALT form.
+    #[test]
+    fn reset_qualifier_constants_are_mode_number_shifted() {
+        for (q, alt, mode) in [
+            (
+                RESET_QUALIFIER_APPLICATION_DATA,
+                RESET_QUALIFIER_APPLICATION_DATA_ALT,
+                1u16,
+            ),
+            (
+                RESET_QUALIFIER_COMMUNICATION_PARAM,
+                RESET_QUALIFIER_COMMUNICATION_PARAM_ALT,
+                2,
+            ),
+            (
+                RESET_QUALIFIER_ENGINEERING_PARAM,
+                RESET_QUALIFIER_ENGINEERING_PARAM_ALT,
+                3,
+            ),
+            (
+                RESET_QUALIFIER_ALL_STORED_DATA,
+                RESET_QUALIFIER_ALL_STORED_DATA_ALT,
+                4,
+            ),
+            (
+                RESET_QUALIFIER_ENGINEERING_PARAM_2,
+                RESET_QUALIFIER_ENGINEERING_PARAM_2_ALT,
+                5,
+            ),
+            (
+                RESET_QUALIFIER_TO_FACTORY,
+                RESET_QUALIFIER_TO_FACTORY_ALT,
+                8,
+            ),
+            (
+                RESET_QUALIFIER_AND_RESTORE,
+                RESET_QUALIFIER_AND_RESTORE_ALT,
+                9,
+            ),
+        ] {
+            assert_eq!(q, mode << 1, "mode {mode}");
+            assert_eq!(alt, (mode << 1) | 1, "mode {mode} alt");
+        }
+    }
+
+    #[test]
+    fn reset_qualifier_names() {
+        assert_eq!(
+            reset_qualifier_name(0x0004),
+            "Reset communication parameter"
+        );
+        assert_eq!(
+            reset_qualifier_name(0x0005),
+            "Reset communication parameter"
+        );
+        assert_eq!(reset_qualifier_name(0x0002), "Reset application data");
+        assert_eq!(reset_qualifier_name(0x0010), "Reset to factory values");
+        assert_eq!(reset_qualifier_name(0x0040), "Unknown (0x0040)");
     }
 
     // test_multicast_address
