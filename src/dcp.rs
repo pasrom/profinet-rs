@@ -61,13 +61,66 @@ pub const DCP_SUBOPTION_CONTROL_RESPONSE: u8 = 0x04;
 pub const DCP_SUBOPTION_CONTROL_RESET_FACTORY: u8 = 0x05;
 pub const DCP_SUBOPTION_CONTROL_RESET_TO_FACTORY: u8 = 0x06;
 
-/// Reset-to-factory mode bitmasks (dcp.py RESET_MODE_*).
+/// Legacy reset mode constants (dcp.py RESET_MODE_*, which keeps them "for
+/// compatibility"). They are not the spec's encoding: they read as one bit per
+/// mode, while the ResetToFactory BlockQualifier carries the mode *number* in
+/// bits 1..15. Sent as a qualifier, `RESET_MODE_COMMUNICATION` (0x0002) is mode
+/// 1, reset application data, and `RESET_MODE_ALL_DATA` (0x0010) is mode 8,
+/// reset to factory values. Use the `RESET_QUALIFIER_*` values below.
+#[deprecated(note = "not the spec encoding; use the RESET_QUALIFIER_* values")]
 pub const RESET_MODE_COMMUNICATION: u16 = 0x0002;
+#[deprecated(note = "not the spec encoding; use the RESET_QUALIFIER_* values")]
 pub const RESET_MODE_APPLICATION: u16 = 0x0004;
+#[deprecated(note = "not the spec encoding; use the RESET_QUALIFIER_* values")]
 pub const RESET_MODE_ENGINEERING: u16 = 0x0008;
+#[deprecated(note = "not the spec encoding; use the RESET_QUALIFIER_* values")]
 pub const RESET_MODE_ALL_DATA: u16 = 0x0010;
+#[deprecated(note = "not the spec encoding; use the RESET_QUALIFIER_* values")]
 pub const RESET_MODE_DEVICE: u16 = 0x0020;
+#[deprecated(note = "not the spec encoding; use the RESET_QUALIFIER_* values")]
 pub const RESET_MODE_FACTORY: u16 = 0x0040;
+
+/// ResetToFactory BlockQualifier values (IEC 61158-6-10; dcp.py
+/// ResetQualifier). The mode number sits in bits 1..15, so the qualifier is
+/// `mode << 1`; each mode also has an `_ALT` value with bit 0 set.
+pub const RESET_QUALIFIER_APPLICATION_DATA: u16 = 0x0002; // mode 1
+pub const RESET_QUALIFIER_APPLICATION_DATA_ALT: u16 = 0x0003;
+pub const RESET_QUALIFIER_COMMUNICATION_PARAM: u16 = 0x0004; // mode 2
+pub const RESET_QUALIFIER_COMMUNICATION_PARAM_ALT: u16 = 0x0005;
+pub const RESET_QUALIFIER_ENGINEERING_PARAM: u16 = 0x0006; // mode 3
+pub const RESET_QUALIFIER_ENGINEERING_PARAM_ALT: u16 = 0x0007;
+pub const RESET_QUALIFIER_ALL_STORED_DATA: u16 = 0x0008; // mode 4
+pub const RESET_QUALIFIER_ALL_STORED_DATA_ALT: u16 = 0x0009;
+pub const RESET_QUALIFIER_ENGINEERING_PARAM_2: u16 = 0x000A; // mode 5
+pub const RESET_QUALIFIER_ENGINEERING_PARAM_2_ALT: u16 = 0x000B;
+pub const RESET_QUALIFIER_TO_FACTORY: u16 = 0x0010; // mode 8
+pub const RESET_QUALIFIER_TO_FACTORY_ALT: u16 = 0x0011;
+pub const RESET_QUALIFIER_AND_RESTORE: u16 = 0x0012; // mode 9
+pub const RESET_QUALIFIER_AND_RESTORE_ALT: u16 = 0x0013;
+
+/// Human-readable name of a ResetToFactory qualifier (dcp.py
+/// ResetQualifier.get_name).
+pub fn reset_qualifier_name(qualifier: u16) -> String {
+    let name = match qualifier {
+        RESET_QUALIFIER_APPLICATION_DATA | RESET_QUALIFIER_APPLICATION_DATA_ALT => {
+            "Reset application data"
+        }
+        RESET_QUALIFIER_COMMUNICATION_PARAM | RESET_QUALIFIER_COMMUNICATION_PARAM_ALT => {
+            "Reset communication parameter"
+        }
+        RESET_QUALIFIER_ENGINEERING_PARAM
+        | RESET_QUALIFIER_ENGINEERING_PARAM_ALT
+        | RESET_QUALIFIER_ENGINEERING_PARAM_2
+        | RESET_QUALIFIER_ENGINEERING_PARAM_2_ALT => "Reset engineering parameter",
+        RESET_QUALIFIER_ALL_STORED_DATA | RESET_QUALIFIER_ALL_STORED_DATA_ALT => {
+            "Reset all stored data"
+        }
+        RESET_QUALIFIER_TO_FACTORY | RESET_QUALIFIER_TO_FACTORY_ALT => "Reset to factory values",
+        RESET_QUALIFIER_AND_RESTORE | RESET_QUALIFIER_AND_RESTORE_ALT => "Reset and restore data",
+        _ => return format!("Unknown (0x{qualifier:04X})"),
+    };
+    name.to_string()
+}
 
 /// DCP SET response block error codes (dcp.py DCP_BLOCK_ERROR_*).
 pub const DCP_BLOCK_ERROR_OK: u8 = 0x00;
@@ -331,16 +384,16 @@ pub fn signal_request(src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32, duration_m
     )
 }
 
-/// Control/ResetToFactory request (dcp.py reset_to_factory): the reset mode
-/// bitmask as the block qualifier, no value bytes.
-pub fn reset_request(src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32, mode: u16) -> Vec<u8> {
+/// Control/ResetToFactory request (dcp.py reset_to_factory): `qualifier` as
+/// the block qualifier, no value bytes. Pass a `RESET_QUALIFIER_*` value.
+pub fn reset_request(src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32, qualifier: u16) -> Vec<u8> {
     set_request(
         src_mac,
         dst_mac,
         xid,
         DCP_OPTION_CONTROL,
         DCP_SUBOPTION_CONTROL_RESET_TO_FACTORY,
-        mode,
+        qualifier,
         &[],
     )
 }

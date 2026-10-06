@@ -104,38 +104,48 @@ enum SettableParam {
     Name,
 }
 
-/// Reset mode for the reset command (argparse `choices`, default factory).
+/// Reset mode for the reset command, one per ResetToFactory mode of
+/// IEC 61158-6-10 (the mode number is in the doc comment). There is no
+/// default: every mode erases something, and which data goes is the caller's
+/// decision, not one a missing flag should make.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum ResetMode {
-    Communication,
+    /// Mode 1: reset application data.
     Application,
+    /// Mode 2: reset communication parameters (station name, IP).
+    Communication,
+    /// Mode 3: reset engineering parameters.
     Engineering,
+    /// Mode 4: reset all stored data.
     #[value(name = "all-data")]
     AllData,
-    Device,
+    /// Mode 8: reset to factory values.
     Factory,
+    /// Mode 9: reset and restore data.
+    Restore,
 }
 
 impl ResetMode {
-    fn mask(self) -> u16 {
+    /// The BlockQualifier this mode is sent as.
+    fn qualifier(self) -> u16 {
         match self {
-            ResetMode::Communication => dcp::RESET_MODE_COMMUNICATION,
-            ResetMode::Application => dcp::RESET_MODE_APPLICATION,
-            ResetMode::Engineering => dcp::RESET_MODE_ENGINEERING,
-            ResetMode::AllData => dcp::RESET_MODE_ALL_DATA,
-            ResetMode::Device => dcp::RESET_MODE_DEVICE,
-            ResetMode::Factory => dcp::RESET_MODE_FACTORY,
+            ResetMode::Application => dcp::RESET_QUALIFIER_APPLICATION_DATA,
+            ResetMode::Communication => dcp::RESET_QUALIFIER_COMMUNICATION_PARAM,
+            ResetMode::Engineering => dcp::RESET_QUALIFIER_ENGINEERING_PARAM,
+            ResetMode::AllData => dcp::RESET_QUALIFIER_ALL_STORED_DATA,
+            ResetMode::Factory => dcp::RESET_QUALIFIER_TO_FACTORY,
+            ResetMode::Restore => dcp::RESET_QUALIFIER_AND_RESTORE,
         }
     }
 
     fn as_str(self) -> &'static str {
         match self {
-            ResetMode::Communication => "communication",
             ResetMode::Application => "application",
+            ResetMode::Communication => "communication",
             ResetMode::Engineering => "engineering",
             ResetMode::AllData => "all-data",
-            ResetMode::Device => "device",
             ResetMode::Factory => "factory",
+            ResetMode::Restore => "restore",
         }
     }
 }
@@ -277,13 +287,13 @@ enum Command {
         target: String,
     },
 
-    /// Reset device to factory settings.
+    /// Reset device data via DCP ResetToFactory.
     Reset {
         /// Device MAC address (e.g. aa:bb:cc:dd:ee:ff).
         #[arg(value_name = "MAC")]
         target: String,
-        /// Reset mode.
-        #[arg(long, value_enum, default_value = "factory")]
+        /// Which data to reset. Required: there is no safe default.
+        #[arg(long, value_enum)]
         mode: ResetMode,
     },
 
@@ -641,7 +651,7 @@ fn cmd_signal(iface: &str, my_mac: &[u8; 6], target: &str) -> Result<i32, String
 
 fn cmd_reset(iface: &str, my_mac: &[u8; 6], target: &str, mode: ResetMode) -> Result<i32, String> {
     let dst = s2mac(target)?;
-    let request = dcp::reset_request(my_mac, &dst, gen_xid()?, mode.mask());
+    let request = dcp::reset_request(my_mac, &dst, gen_xid()?, mode.qualifier());
 
     println!("Resetting device {target} (mode: {})...", mode.as_str());
     match dcp_set_roundtrip(iface, my_mac, &request, Duration::from_secs(5)) {
@@ -3793,12 +3803,16 @@ mod tests {
     }
 
     #[test]
-    fn reset_default_and_enum() {
-        let cli = parse(&["profinet", "-i", "en0", "reset", "aa:bb"]);
-        match cli.command {
-            Command::Reset { mode, .. } => assert_eq!(mode, ResetMode::Factory),
-            other => panic!("wrong command: {other:?}"),
-        }
+    fn reset_mode_is_required_and_parsed() {
+        assert!(
+            Cli::try_parse_from(["profinet", "-i", "en0", "reset", "aa:bb"]).is_err(),
+            "a reset without --mode must not pick one"
+        );
+        assert!(
+            Cli::try_parse_from(["profinet", "-i", "en0", "reset", "aa:bb", "--mode", "device"])
+                .is_err(),
+            "`device` named no spec mode and is gone"
+        );
         let cli = parse(&[
             "profinet", "-i", "en0", "reset", "aa:bb", "--mode", "all-data",
         ]);
@@ -3908,12 +3922,20 @@ mod tests {
     }
 
     #[test]
-    fn reset_mode_masks() {
-        assert_eq!(ResetMode::Factory.mask(), dcp::RESET_MODE_FACTORY);
-        assert_eq!(
-            ResetMode::Communication.mask(),
-            dcp::RESET_MODE_COMMUNICATION
-        );
+    fn reset_mode_sends_the_spec_mode_number() {
+        // The qualifier is the IEC 61158-6-10 mode number shifted left by one.
+        // Literal values on purpose: comparing against the RESET_QUALIFIER_*
+        // constants would pass with the constants wrong.
+        for (mode, number) in [
+            (ResetMode::Application, 1u16),
+            (ResetMode::Communication, 2),
+            (ResetMode::Engineering, 3),
+            (ResetMode::AllData, 4),
+            (ResetMode::Factory, 8),
+            (ResetMode::Restore, 9),
+        ] {
+            assert_eq!(mode.qualifier(), number << 1, "{}", mode.as_str());
+        }
         assert_eq!(ResetMode::AllData.as_str(), "all-data");
     }
 
