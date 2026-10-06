@@ -55,16 +55,43 @@ pub const IOCR_BLOCK_RES: u16 = 0x8102;
 /// say what it really has in each slot, and who owns it.
 pub const MODULE_DIFF_BLOCK: u16 = 0x8104;
 
-/// `SubmoduleState.ARInfo` value meaning the submodule belongs to the AR being
-/// established. Any other value means the device kept it for someone else, and
-/// then the cyclic frames carry substitute data with IOPS bad -- an AR that
-/// looks fully established and delivers nothing.
+/// `SubmoduleState.ARInfo`: the submodule belongs to the AR being established.
 pub const AR_INFO_OK: u16 = 0;
 
-/// `SubmoduleState.ARInfo` value seen when another IO-controller still owns the
-/// submodule. A Siemens CPU keeps ownership even in STOP, so "the PLC is
-/// stopped" is not the same as "the device is free".
+/// `SubmoduleState.ARInfo`: the submodule belongs to this AR, and the device's
+/// application is not ready for it yet.
+///
+/// This is not a refusal. It is the state a device reports while it is still
+/// coming up, and the connect sequence waits for ApplicationReady immediately
+/// afterwards — so treating it as "somebody else has it" would refuse a
+/// connect that was about to succeed, and send the caller looking for an owner
+/// who does not exist.
+pub const AR_INFO_APPLICATION_READY_PENDING: u16 = 1;
+
+/// `SubmoduleState.ARInfo`: held by a superordinated relationship.
+pub const AR_INFO_LOCKED_SUPERORDINATED: u16 = 2;
+
+/// `SubmoduleState.ARInfo`: another IO-controller still owns the submodule.
+///
+/// A controller can keep ownership while it is stopped, so "the controller is
+/// not running" is not the same as "the device is free".
 pub const AR_INFO_LOCKED_BY_IOC: u16 = 3;
+
+/// `SubmoduleState.ARInfo`: an IO-supervisor still owns the submodule.
+pub const AR_INFO_LOCKED_BY_IOS: u16 = 4;
+
+/// `SubmoduleState.IdentInfo`: the submodule is the one that was asked for.
+pub const IDENT_INFO_OK: u16 = 0;
+
+/// `SubmoduleState.IdentInfo`: something else is plugged, standing in for what
+/// was asked for.
+pub const IDENT_INFO_SUBSTITUTE: u16 = 1;
+
+/// `SubmoduleState.IdentInfo`: the wrong submodule is plugged.
+pub const IDENT_INFO_WRONG: u16 = 2;
+
+/// `SubmoduleState.IdentInfo`: nothing is plugged there.
+pub const IDENT_INFO_NO_SUBMODULE: u16 = 3;
 
 /// `SubmoduleState` bit 15, the format indicator. Set, the word is the run of
 /// named fields ARInfo and IdentInfo are part of. Clear, the remaining bits
@@ -356,14 +383,37 @@ impl SubmoduleDiff {
 
     /// Is the submodule held for someone else? Only this warrants telling the
     /// caller to go and release the device.
+    ///
+    /// `ARInfo` is an enumeration, not a flag: of its five values only the
+    /// three locks mean another relationship has it. Treating every non-zero
+    /// value as a lock would include ApplicationReadyPending, which is this
+    /// AR's own submodule on a device that is still coming up.
     pub fn is_locked(self) -> bool {
-        self.ar_info().is_some_and(|ar_info| ar_info != AR_INFO_OK)
+        self.ar_info().is_some_and(|ar_info| {
+            matches!(
+                ar_info,
+                AR_INFO_LOCKED_SUPERORDINATED | AR_INFO_LOCKED_BY_IOC | AR_INFO_LOCKED_BY_IOS
+            )
+        })
     }
 
     /// Will this AR actually be given the submodule's data?
+    ///
+    /// Owned covers ApplicationReadyPending as well as Own: both say the
+    /// submodule is this AR's, and the connect sequence waits for
+    /// ApplicationReady straight afterwards anyway.
+    ///
+    /// Identity is the stricter half. Anything but the submodule that was
+    /// asked for is refused, substitutes included — a substitute can be a
+    /// configured and working arrangement, so that is a choice rather than a
+    /// consequence, made because this tool is pointed at a device whose
+    /// configuration is supposed to be known.
     pub fn is_ours(self) -> bool {
         match (self.ar_info(), self.ident_info()) {
-            (Some(ar_info), Some(ident_info)) => ar_info == AR_INFO_OK && ident_info == 0,
+            (Some(ar_info), Some(ident_info)) => {
+                matches!(ar_info, AR_INFO_OK | AR_INFO_APPLICATION_READY_PENDING)
+                    && ident_info == IDENT_INFO_OK
+            }
             // The word is in the other format, so nothing in it says the
             // submodule was withheld. Refusing on that would break a connect
             // the device never objected to.
@@ -381,14 +431,22 @@ impl SubmoduleDiff {
         };
         let owner = match ar_info {
             AR_INFO_OK => "owned by this AR".to_string(),
+            AR_INFO_APPLICATION_READY_PENDING => {
+                "owned by this AR, application not ready yet".to_string()
+            }
+            AR_INFO_LOCKED_SUPERORDINATED => "locked by a superordinated relationship".to_string(),
             AR_INFO_LOCKED_BY_IOC => "locked by another IO-controller".to_string(),
-            other => format!("ARInfo 0x{other:X}"),
+            AR_INFO_LOCKED_BY_IOS => "locked by an IO-supervisor".to_string(),
+            other => format!("ARInfo 0x{other:X}, a value this code does not know"),
         };
-        if ident_info == 0 {
-            owner
-        } else {
-            format!("{owner}, IdentInfo 0x{ident_info:X} (not the submodule we asked for)")
-        }
+        let identity = match ident_info {
+            IDENT_INFO_OK => return owner,
+            IDENT_INFO_SUBSTITUTE => "a substitute is plugged",
+            IDENT_INFO_WRONG => "the wrong submodule is plugged",
+            IDENT_INFO_NO_SUBMODULE => "nothing is plugged there",
+            _ => "IdentInfo is a value this code does not know",
+        };
+        format!("{owner}, but {identity}")
     }
 }
 
@@ -2194,15 +2252,110 @@ mod tests {
             slot: 2,
             subslot: 1,
             submodule_ident: 0x1,
-            state: submodule_state(2, AR_INFO_OK),
+            state: submodule_state(IDENT_INFO_WRONG, AR_INFO_OK),
         };
 
         assert!(!wrong.is_ours());
+        assert!(!wrong.is_locked(), "nobody is holding it");
         assert!(
-            wrong.reason().contains("not the submodule we asked for"),
+            wrong.reason().contains("the wrong submodule is plugged"),
             "{}",
             wrong.reason()
         );
+    }
+
+    /// `ARInfo` is an enumeration, and only three of its values are locks.
+    /// ApplicationReadyPending is this AR's own submodule on a device that has
+    /// not finished starting, so refusing it would turn a connect that was
+    /// about to succeed into a failure, with advice pointing at an owner who
+    /// does not exist.
+    #[test]
+    fn application_ready_pending_is_ours_and_is_not_a_lock() {
+        let pending = SubmoduleDiff {
+            slot: 2,
+            subslot: 1,
+            submodule_ident: 0x1,
+            state: submodule_state(IDENT_INFO_OK, AR_INFO_APPLICATION_READY_PENDING),
+        };
+
+        assert!(pending.is_ours());
+        assert!(!pending.is_locked());
+        assert!(
+            pending.reason().contains("application not ready"),
+            "{}",
+            pending.reason()
+        );
+    }
+
+    /// Every value the field defines, so a new one cannot be quietly folded
+    /// into whichever branch happens to be last.
+    #[test]
+    fn every_ar_info_value_is_classified_and_named() {
+        let diff = |ar_info| SubmoduleDiff {
+            slot: 2,
+            subslot: 1,
+            submodule_ident: 0x1,
+            state: submodule_state(IDENT_INFO_OK, ar_info),
+        };
+
+        for (ar_info, ours, locked, word) in [
+            (AR_INFO_OK, true, false, "owned by this AR"),
+            (
+                AR_INFO_APPLICATION_READY_PENDING,
+                true,
+                false,
+                "application not ready",
+            ),
+            (AR_INFO_LOCKED_SUPERORDINATED, false, true, "superordinated"),
+            (AR_INFO_LOCKED_BY_IOC, false, true, "IO-controller"),
+            (AR_INFO_LOCKED_BY_IOS, false, true, "IO-supervisor"),
+        ] {
+            let d = diff(ar_info);
+            assert_eq!(d.is_ours(), ours, "ARInfo {ar_info}: is_ours");
+            assert_eq!(d.is_locked(), locked, "ARInfo {ar_info}: is_locked");
+            assert!(
+                d.reason().contains(word),
+                "ARInfo {ar_info}: {}",
+                d.reason()
+            );
+        }
+
+        // A reserved value is not silently treated as ownership.
+        let reserved = diff(0xF);
+        assert!(!reserved.is_ours());
+        assert!(
+            reserved.reason().contains("does not know"),
+            "{}",
+            reserved.reason()
+        );
+    }
+
+    /// The identity half, likewise. Only `OK` passes; the message names which
+    /// of the three ways it failed, because they are fixed in different places.
+    #[test]
+    fn every_ident_info_value_is_classified_and_named() {
+        let diff = |ident_info| SubmoduleDiff {
+            slot: 2,
+            subslot: 1,
+            submodule_ident: 0x1,
+            state: submodule_state(ident_info, AR_INFO_OK),
+        };
+
+        assert!(diff(IDENT_INFO_OK).is_ours());
+        for (ident_info, word) in [
+            (IDENT_INFO_SUBSTITUTE, "substitute"),
+            (IDENT_INFO_WRONG, "wrong submodule"),
+            (IDENT_INFO_NO_SUBMODULE, "nothing is plugged"),
+        ] {
+            let d = diff(ident_info);
+            assert!(!d.is_ours(), "IdentInfo {ident_info}: is_ours");
+            assert!(!d.is_locked(), "IdentInfo {ident_info}: nobody holds it");
+            assert!(
+                d.reason().contains(word),
+                "IdentInfo {ident_info}: {}",
+                d.reason()
+            );
+        }
     }
 
     /// Bit 15 decides whether the word is made of fields at all. Without it the
