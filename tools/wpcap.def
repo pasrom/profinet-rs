@@ -14,6 +14,11 @@
 ;   cargo build --target x86_64-pc-windows-gnu 2>&1 |
 ;     grep -o 'undefined reference to `[a-z_]*' | sed 's/.*`//' | sort -u
 ;
+; The two Windows targets do not need the same list. MSVC reports a missing one
+; as `unresolved external symbol __imp_<name>`, and it references calls the gnu
+; build does not: pcap_setmintocopy is reached through the same immediate_mode
+; the gnu build links without it.
+;
 LIBRARY wpcap.dll
 EXPORTS
 pcap_activate
@@ -50,5 +55,6 @@ pcap_set_timeout
 pcap_set_tstamp_precision
 pcap_set_tstamp_type
 pcap_setfilter
+pcap_setmintocopy
 pcap_setnonblock
 pcap_t
