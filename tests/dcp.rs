@@ -82,6 +82,7 @@ fn expected_device() -> DcpDevice {
         vendor_id: 0x002A,
         device_id: 0x0101,
         role: 0x01,
+        ip_block_info: Some(0x0001),
     }
 }
 
@@ -228,6 +229,27 @@ fn parse_rejects_frames_that_are_not_identify_responses() {
         let err = parse_identify_response(&frame).unwrap_err();
         assert!(err.contains("frame_id"), "unexpected error: {err}");
     }
+}
+
+#[test]
+fn parse_reads_the_ip_block_status_word() {
+    let ip = [192, 168, 0, 2, 255, 255, 255, 0, 0, 0, 0, 0];
+    for info in [0x0000, 0x0001, 0x0002, 0x0081] {
+        let mut blocks = resp_block(0x02, 0x02, 0x0000, b"dev");
+        blocks.extend_from_slice(&resp_block(0x01, 0x02, info, &ip));
+        let device = parse_identify_response(&response_frame(&blocks)).expect("parse");
+        assert_eq!(device.ip_block_info, Some(info));
+        assert_eq!(device.ip, [192, 168, 0, 2]);
+    }
+}
+
+#[test]
+fn ip_block_status_is_not_taken_from_another_block() {
+    // The name block's status word is not the IP's. Without an IP block there
+    // is no status at all, which must not read as "not set".
+    let blocks = resp_block(0x02, 0x02, 0x0081, b"dev");
+    let device = parse_identify_response(&response_frame(&blocks)).expect("parse");
+    assert_eq!(device.ip_block_info, None);
 }
 
 #[test]
@@ -761,6 +783,31 @@ mod py_parity {
         assert_eq!(RESET_MODE_COMMUNICATION, 0x0002);
         assert_eq!(RESET_MODE_APPLICATION, 0x0004);
         assert_eq!(RESET_MODE_FACTORY, 0x0040);
+    }
+
+    // TestIPBlockInfo
+    #[test]
+    fn ip_block_info_constants_names_and_flags() {
+        assert_eq!(IP_BLOCK_INFO_NOT_SET, 0x0000);
+        assert_eq!(IP_BLOCK_INFO_SET, 0x0001);
+        assert_eq!(IP_BLOCK_INFO_SET_BY_DHCP, 0x0002);
+        assert_eq!(IP_BLOCK_INFO_NOT_SET_CONFLICT, 0x0080);
+        assert_eq!(IP_BLOCK_INFO_SET_CONFLICT, 0x0081);
+        assert_eq!(IP_BLOCK_INFO_SET_BY_DHCP_CONFLICT, 0x0082);
+
+        assert_eq!(ip_block_info_name(0x0000), "IP not set");
+        assert_eq!(ip_block_info_name(0x0001), "IP set");
+        assert_eq!(ip_block_info_name(0x0002), "IP set by DHCP");
+        for info in [0x0080, 0x0081, 0x0082] {
+            assert!(ip_block_info_name(info).contains("conflict"), "{info:#06x}");
+            assert!(ip_block_info_has_conflict(info), "{info:#06x}");
+        }
+        assert_eq!(ip_block_info_name(0x00FF), "Unknown (0x00FF)");
+
+        assert!(!ip_block_info_has_conflict(0x0001));
+        assert!(ip_block_info_is_dhcp(0x0002));
+        assert!(ip_block_info_is_dhcp(0x0082));
+        assert!(!ip_block_info_is_dhcp(0x0001));
     }
 
     // ResetQualifier: the mode number shifted left by one, bit 0 the _ALT form.
