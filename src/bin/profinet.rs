@@ -129,8 +129,9 @@ enum SettableParam {
     Name,
 }
 
-/// Reset mode for the reset command, one per ResetToFactory mode of
-/// IEC 61158-6-10 (the mode number is in the doc comment). There is no
+/// Reset mode for the reset command: one per ResetToFactory mode of
+/// IEC 61158-6-10 (the mode number is in the doc comment), and the older
+/// Control/FactoryReset as `legacy-factory`. There is no
 /// default: every mode erases something, and which data goes is the caller's
 /// decision, not one a missing flag should make.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -148,19 +149,44 @@ enum ResetMode {
     Factory,
     /// Mode 9: reset and restore data.
     Restore,
+    /// Not a mode: Control/FactoryReset (suboption 5), the reset that
+    /// preceded ResetToFactory, for a device that refuses the mode it would
+    /// need. The service names no data, so what it erases is the device's
+    /// choice; expect at least the station name and the IP.
+    LegacyFactory,
 }
 
 impl ResetMode {
-    /// The BlockQualifier this mode is sent as.
-    fn qualifier(self) -> u16 {
+    /// The request this mode is sent as: ResetToFactory with the mode's
+    /// qualifier, or for `legacy-factory` the older FactoryReset.
+    fn request(self, src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32) -> Vec<u8> {
+        match self.qualifier() {
+            Some(qualifier) => dcp::reset_request(src_mac, dst_mac, xid, qualifier),
+            None => dcp::factory_reset_request(src_mac, dst_mac, xid),
+        }
+    }
+
+    /// The `action` its result line carries: the legacy reset is a different
+    /// service, and the line says so.
+    fn action(self) -> DcpAction {
         match self {
+            ResetMode::LegacyFactory => DcpAction::FactoryReset,
+            _ => DcpAction::Reset,
+        }
+    }
+
+    /// The ResetToFactory BlockQualifier this mode is sent as; `None` for
+    /// `legacy-factory`, which is not a ResetToFactory mode.
+    fn qualifier(self) -> Option<u16> {
+        Some(match self {
             ResetMode::Application => dcp::RESET_QUALIFIER_APPLICATION_DATA,
             ResetMode::Communication => dcp::RESET_QUALIFIER_COMMUNICATION_PARAM,
             ResetMode::Engineering => dcp::RESET_QUALIFIER_ENGINEERING_PARAM,
             ResetMode::AllData => dcp::RESET_QUALIFIER_ALL_STORED_DATA,
             ResetMode::Factory => dcp::RESET_QUALIFIER_TO_FACTORY,
             ResetMode::Restore => dcp::RESET_QUALIFIER_AND_RESTORE,
-        }
+            ResetMode::LegacyFactory => return None,
+        })
     }
 
     fn as_str(self) -> &'static str {
@@ -171,6 +197,7 @@ impl ResetMode {
             ResetMode::AllData => "all-data",
             ResetMode::Factory => "factory",
             ResetMode::Restore => "restore",
+            ResetMode::LegacyFactory => "legacy-factory",
         }
     }
 }
@@ -312,7 +339,8 @@ enum Command {
         target: String,
     },
 
-    /// Reset device data via DCP ResetToFactory.
+    /// Reset device data via DCP ResetToFactory, or Control/FactoryReset with
+    /// `--mode legacy-factory`.
     Reset {
         /// Device MAC address (e.g. aa:bb:cc:dd:ee:ff).
         #[arg(value_name = "MAC")]
@@ -756,13 +784,13 @@ fn cmd_signal(set: &DcpSet, target: &str) -> Result<i32, String> {
 
 fn cmd_reset(set: &DcpSet, target: &str, mode: ResetMode) -> Result<i32, String> {
     let dst = s2mac(target)?;
-    let request = dcp::reset_request(&set.my_mac, &dst, gen_xid()?, mode.qualifier());
+    let request = mode.request(&set.my_mac, &dst, gen_xid()?);
     set.banner(format_args!(
         "Resetting device {target} (mode: {})...",
         mode.as_str()
     ));
     set.send(
-        DcpAction::Reset,
+        mode.action(),
         &dst,
         &request,
         "Reset command acknowledged",
@@ -1738,6 +1766,9 @@ enum DcpAction {
     SetIp,
     Signal,
     Reset,
+    /// The legacy Control/FactoryReset, kept apart from `reset` so a result
+    /// line says which service went out.
+    FactoryReset,
 }
 
 /// `{"proto":N,"type":"result","action":..,"mac":..,"ok":..}` — the answer to
@@ -2661,7 +2692,7 @@ fn host_unix_us() -> u128 {
 /// contract and the `--json` answers of the DCP commands. A consumer that
 /// understands a different one must refuse rather than misread: the two
 /// programs ship separately and can drift apart.
-const SERVE_PROTO: u32 = 8;
+const SERVE_PROTO: u32 = 9;
 
 /// One parsed request from the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -4271,9 +4302,48 @@ mod tests {
             (ResetMode::Factory, 8),
             (ResetMode::Restore, 9),
         ] {
-            assert_eq!(mode.qualifier(), number << 1, "{}", mode.as_str());
+            assert_eq!(mode.qualifier(), Some(number << 1), "{}", mode.as_str());
         }
+        assert_eq!(ResetMode::LegacyFactory.qualifier(), None);
         assert_eq!(ResetMode::AllData.as_str(), "all-data");
+    }
+
+    #[test]
+    fn legacy_factory_reset_is_suboption_5_and_the_modes_are_suboption_6() {
+        // Which builder is chosen; the bytes each one writes are pinned in
+        // tests/dcp.rs.
+        let (src, dst) = ([2, 0, 0, 0, 0, 1], [2, 0, 0, 0, 0, 2]);
+        assert_eq!(
+            ResetMode::LegacyFactory.request(&src, &dst, 1),
+            dcp::factory_reset_request(&src, &dst, 1)
+        );
+        assert_eq!(
+            ResetMode::Communication.request(&src, &dst, 1),
+            dcp::reset_request(&src, &dst, 1, dcp::RESET_QUALIFIER_COMMUNICATION_PARAM)
+        );
+    }
+
+    #[test]
+    fn the_legacy_reset_reports_its_own_action() {
+        assert_eq!(ResetMode::LegacyFactory.action(), DcpAction::FactoryReset);
+        assert_eq!(ResetMode::Communication.action(), DcpAction::Reset);
+    }
+
+    #[test]
+    fn legacy_factory_is_a_reset_mode_value() {
+        let cli = parse(&[
+            "profinet",
+            "-i",
+            "en0",
+            "reset",
+            "aa:bb",
+            "--mode",
+            "legacy-factory",
+        ]);
+        match cli.command {
+            Command::Reset { mode, .. } => assert_eq!(mode, ResetMode::LegacyFactory),
+            other => panic!("wrong command: {other:?}"),
+        }
     }
 
     #[test]
@@ -4870,7 +4940,7 @@ mod tests {
         const MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
         assert_eq!(
             result_line(DcpAction::SetName, &MAC, &SetAnswer::Done),
-            r#"{"proto":8,"type":"result","action":"set_name","mac":"02:00:00:00:00:01","ok":true}"#
+            r#"{"proto":9,"type":"result","action":"set_name","mac":"02:00:00:00:00:01","ok":true}"#
         );
         assert_eq!(
             result_line(
@@ -4881,7 +4951,7 @@ mod tests {
                     text: "Set not possible".into()
                 }
             ),
-            r#"{"proto":8,"type":"result","action":"set_ip","mac":"02:00:00:00:00:01","ok":false,"error":"refused","dcp_error":5,"detail":"Set not possible"}"#
+            r#"{"proto":9,"type":"result","action":"set_ip","mac":"02:00:00:00:00:01","ok":false,"error":"refused","dcp_error":5,"detail":"Set not possible"}"#
         );
         assert_eq!(
             result_line(
@@ -4892,15 +4962,19 @@ mod tests {
                     text: "unsupported".into()
                 }
             ),
-            r#"{"proto":8,"type":"result","action":"reset","mac":"02:00:00:00:00:01","ok":false,"error":"refused","detail":"unsupported"}"#
+            r#"{"proto":9,"type":"result","action":"reset","mac":"02:00:00:00:00:01","ok":false,"error":"refused","detail":"unsupported"}"#
+        );
+        assert_eq!(
+            result_line(DcpAction::FactoryReset, &MAC, &SetAnswer::Done),
+            r#"{"proto":9,"type":"result","action":"factory_reset","mac":"02:00:00:00:00:01","ok":true}"#
         );
         assert_eq!(
             result_line(DcpAction::Signal, &MAC, &SetAnswer::Timeout),
-            r#"{"proto":8,"type":"result","action":"signal","mac":"02:00:00:00:00:01","ok":false,"error":"timeout"}"#
+            r#"{"proto":9,"type":"result","action":"signal","mac":"02:00:00:00:00:01","ok":false,"error":"timeout"}"#
         );
         assert_eq!(
             devices_line("en8", &[]),
-            r#"{"proto":8,"type":"devices","iface":"en8","devices":[]}"#
+            r#"{"proto":9,"type":"devices","iface":"en8","devices":[]}"#
         );
         let device = dcp::DcpDevice {
             mac: MAC,
@@ -4917,7 +4991,7 @@ mod tests {
         assert_eq!(
             devices_line("en8", std::slice::from_ref(&device)),
             format!(
-                r#"{{"proto":8,"type":"devices","iface":"en8","devices":[{{"mac":"02:00:00:00:00:01","name":"dev","device_type":"io","ip":"192.168.0.2","netmask":"255.255.255.0","gateway":"0.0.0.0","ip_block_info":129,"vendor_id":42,"vendor_name":"{}","device_id":257,"role":1}}]}}"#,
+                r#"{{"proto":9,"type":"devices","iface":"en8","devices":[{{"mac":"02:00:00:00:00:01","name":"dev","device_type":"io","ip":"192.168.0.2","netmask":"255.255.255.0","gateway":"0.0.0.0","ip_block_info":129,"vendor_id":42,"vendor_name":"{}","device_id":257,"role":1}}]}}"#,
                 profinet_rs::vendors::get_vendor_name(0x002A)
             )
         );
@@ -4959,7 +5033,7 @@ mod tests {
         assert_eq!(
             hello_line("demo", true, 30, false, 6),
             format!(
-                r#"{{"proto":8,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
+                r#"{{"proto":9,"type":"hello","version":"{}","station":"demo","read_only":true,"gap_ms":30,"cyclic":false,"allow_mask":6}}"#,
                 env!("CARGO_PKG_VERSION")
             )
         );

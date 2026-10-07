@@ -108,6 +108,9 @@ profinet -i en0 set-param <mac> name my-device --permanent
 profinet -i en0 signal <mac>
 profinet -i en0 reset <mac> --mode communication
 
+# The older Control/FactoryReset, for a device that refuses the ResetToFactory mode it needs
+profinet -i en0 reset <mac> --mode legacy-factory
+
 # Cyclic RT_CLASS_1 exchange, driven from a GSDML
 profinet -i en0 cyclic <station> --gsdml device.xml
 ```
