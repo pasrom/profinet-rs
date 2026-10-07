@@ -318,6 +318,16 @@ mod cli_builders {
     }
 
     #[test]
+    fn factory_reset_request_is_the_legacy_suboption() {
+        // Control/FactoryReset: option 05, suboption 05, block length 2,
+        // qualifier 0 (the service carries no mode).
+        assert_eq!(
+            hx(&factory_reset_request(&S, &D, X)),
+            "aabbccddeeff0011223344558892fefd04001234567800000006050500020000"
+        );
+    }
+
+    #[test]
     fn set_ip_permanent_matches_reference() {
         assert_eq!(
             hx(&set_ip_request_qualified(
