@@ -398,6 +398,22 @@ pub fn reset_request(src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32, qualifier: 
     )
 }
 
+/// Control/FactoryReset request (suboption 0x05), the reset that preceded
+/// ResetToFactory (suboption 0x06). It stays available beside the mode-based
+/// reset for a device that refuses the mode it would need. The service predates the
+/// reset modes and carries none, so the block qualifier is 0; no value bytes.
+pub fn factory_reset_request(src_mac: &[u8; 6], dst_mac: &[u8; 6], xid: u32) -> Vec<u8> {
+    set_request(
+        src_mac,
+        dst_mac,
+        xid,
+        DCP_OPTION_CONTROL,
+        DCP_SUBOPTION_CONTROL_RESET_FACTORY,
+        0x0000,
+        &[],
+    )
+}
+
 /// Strip the Ethernet (and optional 802.1Q) header of a PROFINET frame,
 /// returning the DCP payload. Mirrors the VLAN handling shared by dcp.py
 /// read_response and _parse_set_response.
